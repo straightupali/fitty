@@ -12,12 +12,12 @@ Picks your outfit so you don't have to. Works on desktop and phones, installs li
   - **Shared pieces:** wearing the jeans in one fit also lowers other fits that use them. Tops, bottoms and outerwear count fully, shoes count half, accessories don't count.
   - **Accept** logs the date. **Skip** hides that fit until the next day.
 - **History:** a calendar of what you wore. Tap a past day to log a fit you forgot, or to remove an entry.
-- **Photos:** drag-and-drop, Ctrl+V, gallery, or phone camera. Backgrounds are removed on your device, in a background worker. The first time, this downloads an AI model of about 40 MB; after that it works offline.
+- **Photos:** drag-and-drop, Ctrl+V, gallery, or phone camera. Backgrounds are removed on your device, in a background worker. It needs a one-time ~40 MB download (Settings → Download now), then works offline. Photos added offline are cut out automatically once you reconnect.
 - **How did it feel? (v2):** rate past days as too cold, just right, or too hot. Fitty learns a personal temperature bias and per-fit weight corrections.
 - **Combo ideas (v2):** new top + bottom pairings from your own pieces, with matching shoes and outerwear, ranked by color, weather and how little the pieces get worn.
 - **Color matching (v2):** colors come from photos or names, or you pick them, and each fit gets a Great match / Good match / Bold / Might clash verdict.
 - **Week planner (v2):** a 7-day plan from the forecast that follows the cooldown rules. Swap any day.
-- **Stats (v2):** most worn, collecting dust, category usage, color palette, cost per wear, and comfort.
+- **Stats (v2):** most worn, collecting dust, category usage, color palette, and comfort.
 
 See `CHANGELOG.md` for version history.
 

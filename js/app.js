@@ -2,7 +2,7 @@
 import { db, uid, persistStorage, exportAll, importAll } from './db.js';
 import { DEFAULT_LOCATION, DEFAULT_MAPPING, weightForTemp, searchCity, getForecast, describeCode } from './weather.js';
 import { scoreFits, pickWeighted, toISO, fromISO, daysBetween } from './recommend.js';
-import { shrink, removeBackground, imageURL, warmUpBackgroundRemoval } from './images.js';
+import { shrink, removeBackground, imageURL, warmUpBackgroundRemoval, prepareOffline, offlineReady, looksLikeNetworkError } from './images.js';
 import { PALETTE, colorInfo, colorFromName, extractColor, harmony } from './colors.js';
 import { computeLearning, effectiveWeight } from './learn.js';
 import { buildPlan, repickDay } from './planner.js';
@@ -19,8 +19,8 @@ const CATS = [
 const CAT = Object.fromEntries(CATS.map((c, i) => [c.id, { ...c, i }]));
 const GROUP_COLORS = ['#D9A79A', '#A9BFA8', '#A7B8CC', '#E2C38E', '#C7B2D6', '#9FC9C6', '#E5A9B8', '#B9AE9E'];
 const DEFAULT_SETTINGS = { location: DEFAULT_LOCATION, mapping: DEFAULT_MAPPING, blockDays: 2, fadeDays: 7, autoBg: true,
-  learn: true, learnSince: 0, currency: 'IQD' };
-const APP_VERSION = '2.0.1';
+  learn: true, learnSince: 0 };
+const APP_VERSION = '2.1';
 const WEIGHT_WORDS = ['Very light', 'Light', 'Mild', 'Medium', 'Warm', 'Heaviest'];
 
 const ICONS = {
@@ -366,26 +366,52 @@ function queueBg(id) {
   bgChain = bgChain.then(() => runBg(id)).catch(() => { });
 }
 async function runBg(id) {
-  const p = pieceById(id);
-  if (!p || !p.image) { S.bgBusy.delete(id); return; }
+  const p0 = pieceById(id);
+  if (!p0 || !p0.image) { S.bgBusy.delete(id); refreshBusy(id); return; }
   let firstToast = null;
   try {
-    if (!bgWarned) { firstToast = toast('Cutting out background… first time downloads the AI model', null, 6000); bgWarned = true; }
-    const src = p.original || p.image;
+    if (!bgWarned && !(await offlineReady())) { firstToast = toast('Cutting out background… first time downloads the AI model', null, 6000); }
+    bgWarned = true;
+    const src = p0.original || p0.image;
     const out = await removeBackground(src, (pct, key) => setBusyText(id, key && key.startsWith('fetch') ? `downloading AI ${pct}%` : 'cutting out…'));
-    p.original = p.original || p.image;
+    // Re-read the piece: it may have been edited or reloaded while the AI was working.
+    const p = (await db.get('pieces', id)) || null;
+    if (!p) return;
+    const cur = p.original || p.image;
+    if (!cur || cur.size !== src.size) return; // the photo was replaced meanwhile — don't overwrite it
+    p.original = p.original || src;
     p.image = out;
+    delete p.bgPending;
     if (p.colorSource !== 'manual') { const c = await extractColor(out).catch(() => null); if (c) { p.color = c; p.colorSource = 'auto'; } }
     await db.put('pieces', p);
+    replacePiece(p);
   } catch (err) {
     console.warn('Background removal failed', err);
-    toast(navigator.onLine ? 'Background removal failed — kept the original photo' : 'Offline — kept the original photo');
+    const p = await db.get('pieces', id);
+    if (p && looksLikeNetworkError(err)) {
+      p.bgPending = true; await db.put('pieces', p); replacePiece(p);
+      toast('No internet — Fitty will cut out the background when you\'re back online', null, 4000);
+    } else toast('Background removal failed — kept the original photo');
   } finally {
     firstToast && firstToast.remove();
     S.bgBusy.delete(id);
     refreshBusy(id);
+    render(); // show the result (or the "waiting for internet" badge) on the current page
   }
 }
+// Swap in an updated piece everywhere: memory, the current page, and any open window showing it.
+function replacePiece(p) {
+  const i = S.pieces.findIndex(x => x.id === p.id);
+  if (i >= 0) S.pieces[i] = p; else S.pieces.push(p);
+  render();
+  window.dispatchEvent(new CustomEvent('fitty:piece-updated', { detail: p }));
+}
+// Pieces added while offline get their cut-out as soon as the internet is back.
+function retryPendingBg() {
+  if (!navigator.onLine || !S.settings.autoBg) return;
+  for (const p of S.pieces) if (p.bgPending && p.image && !S.bgBusy.has(p.id)) queueBg(p.id);
+}
+window.addEventListener('online', retryPendingBg);
 function setBusyText(id, text) {
   $$(`[data-busy="${id}"]`).forEach(el => { el.textContent = '✂︎ ' + text; });
 }
@@ -405,6 +431,7 @@ function itemTile(p, { remove = false, selectable = false, selected = false, act
     <div class="img">${url ? `<img data-piece="${p.id}" src="${url}" alt="${esc(p.name)}" loading="lazy">` : esc(p.name)}</div>
     <div class="label"><b>${esc(p.name)}</b><span>${p.color ? `<i class="cdot" style="background:${p.color}" title="${esc(colorInfo(p.color).name)}"></i>` : ''}${esc(sub ?? CAT[p.category].one)}</span></div>
     <span class="busy ${S.bgBusy.has(p.id) ? '' : 'hidden'}" data-busy="${p.id}">✂︎ cutting out…</span>
+    ${p.bgPending && !S.bgBusy.has(p.id) ? '<span class="pending">⏳ cut-out when online</span>' : ''}
     ${remove ? `<button class="x" data-act="remove" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">${icon('x')}</button>` : ''}
     ${selectable ? `<span class="check">${icon('check')}</span>` : ''}
   </${tag}>`;
@@ -540,11 +567,22 @@ themeMQ.addEventListener && themeMQ.addEventListener('change', () => { if (theme
 
 document.addEventListener('click', (e) => {
   const n = e.target.closest('[data-nav]');
-  if (n) { location.hash = n.dataset.nav; }
+  if (!n) return;
+  if (n.dataset.nav === S.view) { refreshFromStorage(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  else location.hash = n.dataset.nav;
 });
-window.addEventListener('hashchange', () => {
+// Every time you switch pages (or tap the page you're on), reload from storage so nothing is stale.
+async function refreshFromStorage() {
+  await reloadData();
+  render();
+}
+window.addEventListener('hashchange', async () => {
   const v = location.hash.slice(1);
-  if (NAV.some(([id]) => id === v) && v !== S.view) { S.view = v; render(); window.scrollTo(0, 0); }
+  if (NAV.some(([id]) => id === v) && v !== S.view) {
+    S.view = v;
+    render(); window.scrollTo(0, 0);   // instant
+    await refreshFromStorage();       // then fresh
+  }
 });
 
 function render() {
@@ -1211,7 +1249,15 @@ function afterWardrobe(view) {
 }
 
 // ---------------------------------------------------------------- Piece sheet (new / edit)
+let openPiece = null; // only one piece window at a time
 function openPieceSheet(piece, { category = 'top', file = null } = {}) {
+  if (openPiece && !openPiece.closed) {
+    if (piece && openPiece.pieceId === piece.id) { openPiece.el.style.zIndex = ++zTop; return; }
+    toast('Save or close the piece you\'re editing first');
+    openPiece.el.style.zIndex = ++zTop;
+    if ($('.sheet', openPiece.el).classList.contains('collapsed')) $('[data-peek]', openPiece.el)?.click();
+    return;
+  }
   const isNew = !piece;
   const d = piece ? { ...piece } : { id: uid(), name: '', category, image: null, original: null, createdAt: Date.now() };
   let previewURL = null, busy = false, imageChanged = false;
@@ -1236,6 +1282,7 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
   if (S.settings.autoBg) warmUpBackgroundRemoval();
 
   const h = openSheet({
+    movable: 'piece',
     title: () => (isNew ? 'New piece' : 'Edit piece'),
     autofocus: isNew ? '[data-k=name]' : null,
     body: () => {
@@ -1265,8 +1312,6 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
           </span>
           <div class="palette">${PALETTE.map(c => `<button class="psw ${d.color && colorInfo(d.color).family === c.id ? 'on' : ''}" style="background:${c.hex}" data-act="color" data-hex="${c.hex}" title="${c.name}" aria-label="${c.name}"></button>`).join('')}</div>
         </div>
-        <label class="field"><span>Price <span class="muted">(optional, ${esc(S.settings.currency || 'IQD')}) — for cost-per-wear stats</span></span>
-          <input class="input" type="number" min="0" step="any" inputmode="decimal" data-k="price" value="${d.price ?? ''}" placeholder="e.g. 25000"></label>
         ${using.length ? `<div class="section-title">Used in</div><div class="chips">${using.map(f => `<span class="chip">${esc(f.name)}</span>`).join('')}</div>` : ''}`;
     },
     foot: () => `${isNew ? '' : `<button class="btn danger" data-act="delete">${icon('trash')}</button>`}
@@ -1279,7 +1324,6 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
     },
     onInput: (e) => {
       if (e.target.dataset.k === 'name') d.name = e.target.value;
-      if (e.target.dataset.k === 'price') { const v = parseFloat(e.target.value); d.price = Number.isFinite(v) && v >= 0 ? v : null; }
     },
     onAct: async (act, el) => {
       if (act === 'gallery' || act === 'camera') $(`input[data-file=${act}]`, h.el).click();
@@ -1293,7 +1337,21 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
         try {
           const out = await removeBackground(d.image);
           d.original = d.image; d.image = out; imageChanged = false; await autoColor();
-        } catch (err) { console.warn(err); toast(navigator.onLine ? 'Background removal failed' : 'Needs internet the first time'); }
+          if (!isNew) {
+            // Apply it straight away — no need to press Save for the Wardrobe to update.
+            const stored = await db.get('pieces', d.id);
+            if (stored) {
+              Object.assign(stored, { image: d.image, original: d.original, color: d.color, colorSource: d.colorSource });
+              delete stored.bgPending;
+              await db.put('pieces', stored); replacePiece(stored);
+              d.updatedAt = stored.updatedAt;
+            }
+            toast('Background removed');
+          }
+        } catch (err) {
+          console.warn(err);
+          toast(looksLikeNetworkError(err) ? 'Needs internet until the AI is downloaded (Settings → Background removal)' : 'Background removal failed');
+        }
         busy = false; if (!h.closed) h.rerender();
       } else if (act === 'save') {
         d.name = d.name.trim() || defaultName(d.category);
@@ -1322,6 +1380,17 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
     drop: (files) => setImage(files[0]),
     paste: (files) => setImage(files[0]),
   });
+  h.pieceId = d.id;
+  openPiece = h;
+  // If the background finishes cutting this piece while the window is open, show it (unless you changed the photo).
+  const onUpd = (e) => {
+    if (h.closed) { window.removeEventListener('fitty:piece-updated', onUpd); return; }
+    const p = e.detail;
+    if (p.id !== d.id || imageChanged) return;
+    Object.assign(d, { image: p.image, original: p.original, color: d.colorSource === 'manual' ? d.color : p.color, colorSource: d.colorSource === 'manual' ? 'manual' : p.colorSource, updatedAt: p.updatedAt, bgPending: p.bgPending });
+    h.rerender();
+  };
+  window.addEventListener('fitty:piece-updated', onUpd);
   if (file) setImage(file);
 }
 
@@ -1377,7 +1446,6 @@ function viewHistory() {
     </div>`;
 }
 // ---------------------------------------------------------------- Stats
-const money = (v) => `${new Intl.NumberFormat(undefined, { maximumFractionDigits: v < 10 ? 2 : 0 }).format(v)} ${S.settings.currency || ''}`.trim();
 function barList(rows, unit) {
   const max = Math.max(1, ...rows.map(r => r.value));
   return `<div class="bars">${rows.map(r => `<div class="bar-row" title="${esc(r.label)}: ${r.value} ${unit}">
@@ -1421,10 +1489,6 @@ function viewStats() {
   const famRows = [...fam.values()].sort((a, b) => b.n - a.n);
   const colored = famRows.reduce((s, r) => s + r.n, 0);
 
-  const priced = S.pieces.filter(p => p.price > 0).map(p => ({ p, wears: pieceCount.get(p.id) || 0, cpw: p.price / Math.max(1, pieceCount.get(p.id) || 0) }));
-  const best = [...priced].filter(x => x.wears > 0).sort((a, b) => a.cpw - b.cpw).slice(0, 4);
-  const bestIds = new Set(best.map(x => x.p.id));
-  const worst = [...priced].filter(x => !bestIds.has(x.p.id)).sort((a, b) => b.cpw - a.cpw).slice(0, 4);
 
   const tile = (p, sub) => itemTile(p, { act: 'piece', sub });
   return `
@@ -1453,12 +1517,6 @@ function viewStats() {
       <div class="card pad"><h3>Your colors</h3>
         ${colored ? `<div class="colorbar">${famRows.map(r => `<span style="flex:${r.n};background:${r.hex}" title="${esc(r.name)}: ${r.n}"></span>`).join('')}</div>
           <div class="legend">${famRows.map(r => `<span><i style="background:${r.hex}"></i>${esc(r.name)} <b>${r.n}</b></span>`).join('')}</div>` : '<p class="small muted">Add photos or color names to pieces to see your palette.</p>'}</div>
-
-      <div class="card pad"><h3>Cost per wear</h3>
-        ${priced.length ? `
-          ${best.length ? `<div class="section-title" style="margin-top:6px">Best value</div><div class="cpw">${best.map(x => `<button data-act="piece" data-id="${x.p.id}"><span>${esc(x.p.name)}</span><b>${money(x.cpw)}</b><small>${x.wears}× worn</small></button>`).join('')}</div>` : ''}
-          ${worst.length ? `<div class="section-title">Still earning their keep</div>` : ''}<div class="cpw">${worst.map(x => `<button data-act="piece" data-id="${x.p.id}"><span>${esc(x.p.name)}</span><b>${money(x.cpw)}</b><small>${x.wears ? x.wears + '× worn' : 'not worn yet'}</small></button>`).join('')}</div>`
-          : '<p class="small muted">Add a price to pieces (Wardrobe → tap a piece) and Fitty shows what each wear really costs you.</p>'}</div>
 
       <div class="card pad"><h3>Comfort</h3>
         ${rated.length ? `<div class="comfort">
@@ -1582,14 +1640,12 @@ function viewSettings() {
         })()}
       </div>
 
-      <div class="card pad toggle">
-        <div><h3>Currency</h3><p class="small muted" style="margin:4px 0 0">Used for piece prices and cost per wear.</p></div>
-        <input class="input" style="width:110px" data-k="currency" value="${esc(st.currency || 'IQD')}" maxlength="6">
-      </div>
-
-      <div class="card pad toggle">
-        <div><h3>Auto background removal</h3><p class="small muted" style="margin:4px 0 0">Cuts clothes out of photos on your device. First use downloads a ~40 MB model, then works offline.</p></div>
-        <label class="switch"><input type="checkbox" data-k="autobg" ${st.autoBg ? 'checked' : ''}><span></span></label>
+      <div class="card pad">
+        <div class="toggle"><div><h3>Auto background removal</h3><p class="small muted" style="margin:4px 0 0">Cuts clothes out of photos on your device.</p></div>
+          <label class="switch"><input type="checkbox" data-k="autobg" ${st.autoBg ? 'checked' : ''}><span></span></label></div>
+        <div class="offline-row" data-offline>
+          <span class="small muted">Checking offline status…</span>
+        </div>
       </div>
 
       <div class="card pad">
@@ -1623,7 +1679,17 @@ function viewSettings() {
     </div>`;
 }
 
+async function fillOfflineStatus(view) {
+  const el = $('[data-offline]', view);
+  if (!el) return;
+  const ready = await offlineReady();
+  el.innerHTML = ready
+    ? `<span class="small"><span class="ok-dot"></span>Ready offline — works without internet</span>`
+    : `<span class="small muted">Needs a one-time ~40 MB download to work offline.</span>
+       <button class="btn sm" data-act="bg-download">${icon('download')} Download now</button>`;
+}
 function afterSettings(view) {
+  fillOfflineStatus(view);
   if (navigator.storage && navigator.storage.estimate) {
     navigator.storage.estimate().then(e => {
       const el = $('[data-storage]', view);
@@ -1665,7 +1731,6 @@ function afterSettings(view) {
     else if (k === 'fade') { st.fadeDays = Math.max(1, Math.min(60, Number(t.value) || 1)); await saveSettings(); }
     else if (k === 'autobg') { st.autoBg = t.checked; await saveSettings(); }
     else if (k === 'learn') { st.learn = t.checked; await saveSettings(); render(); }
-    else if (k === 'currency') { st.currency = t.value.trim().slice(0, 6) || 'IQD'; await saveSettings(); }
     else if (k === 'gname') {
       const g = groupById(t.dataset.id);
       if (g && t.value.trim()) { g.name = t.value.trim(); await db.put('groups', g); toast('Group renamed'); }
@@ -1678,6 +1743,16 @@ function afterSettings(view) {
     switch (a.dataset.act) {
       case 'install': S.installPrompt.prompt(); S.installPrompt = null; render(); break;
       case 'theme': setTheme(a.dataset.t); break;
+      case 'bg-download': {
+        if (!navigator.onLine) { toast('Connect to the internet first'); return; }
+        a.disabled = true; a.textContent = 'Downloading… 0%';
+        try {
+          await prepareOffline((pct) => { a.textContent = `Downloading… ${pct}%`; });
+          toast('Background removal now works offline');
+        } catch (err) { console.warn(err); toast('Download failed — try again'); }
+        fillOfflineStatus(view);
+        break;
+      }
       case 'learn-reset': {
         if (!(await ask({ title: 'Start learning over?', text: 'Fitty forgets what it learned from your answers so far. Your history stays.', ok: 'Start over' }))) return;
         st.learnSince = Date.now(); await saveSettings(); render(); break;
@@ -1784,9 +1859,15 @@ async function boot() {
   persistStorage();
   loadWeather();
   setTimeout(backfillColors, 800);
+  setTimeout(retryPendingBg, 1500);
   maybeShowWhatsNew();
   // Refresh weather + date when the app comes back to the foreground.
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadWeather(); } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    loadWeather();
+    refreshFromStorage();   // e.g. the date changed, or you edited on another tab
+    retryPendingBg();
+  });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => { });
     // When a new version takes over, reload once so the new files are used right away.

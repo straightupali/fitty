@@ -478,3 +478,12 @@ button.item { border: 0; padding: 0; text-align: left; }
   .feel-btns .btn { flex-direction: column; gap: 2px; padding: 8px 4px; font-size: 12.5px; border-radius: 14px; }
   .feel-btns .fe { font-size: 20px; }
 }
+
+.offline-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.ok-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 8px; vertical-align: 1px; }
+.item .pending { position: absolute; left: 8px; top: 8px; font-size: 11px; background: var(--float); padding: 3px 8px; border-radius: 999px; }
+/* On phones, a minimized window sits above the tab bar so you can still switch pages */
+@media (max-width: 899px) {
+  .sheet.movable.collapsed { margin-bottom: calc(68px + var(--safe-b)); border-radius: 22px; }
+  .sheet.movable.collapsed .sheet-head { padding-bottom: 12px; }
+}

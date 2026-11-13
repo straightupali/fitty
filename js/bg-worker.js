@@ -34,6 +34,13 @@ self.onmessage = async (e) => {
   try {
     const lib = await loadLib();
     if (warmup) { self.postMessage({ id, type: 'done', blob: null }); return; }
+    if (e.data.preload) {
+      currentJob = id;
+      if (lib.preload) await lib.preload(CONFIG);
+      else await (lib.removeBackground || lib.default)(await tinyImage(), CONFIG);
+      self.postMessage({ id, type: 'done', blob: null });
+      return;
+    }
     currentJob = id;
     const cut = await (lib.removeBackground || lib.default)(blob, CONFIG);
     const out = await trimAndShrink(cut);
@@ -44,6 +51,12 @@ self.onmessage = async (e) => {
     currentJob = null;
   }
 };
+
+async function tinyImage() {
+  const c = new OffscreenCanvas(32, 32);
+  c.getContext('2d').fillRect(8, 8, 16, 16);
+  return c.convertToBlob({ type: 'image/png' });
+}
 
 // Crop transparent margins and downscale — all inside the worker.
 async function trimAndShrink(blob) {

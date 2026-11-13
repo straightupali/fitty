@@ -1,5 +1,17 @@
 # Fitty changelog
 
+## v2.1
+- **Piece window** (new/edit piece) can be dragged and minimized like the fit editor, and the page behind stays usable. On phones, a minimized window sits above the tab bar.
+- **Offline background removal fixed:**
+  - The AI model is now always saved for offline use. Before, the first download could be missed.
+  - Settings shows **Ready offline** or a **Download now** button.
+- **Photos added without internet** show "⏳ cut-out when online" and get cut out automatically when you reconnect.
+- **Wardrobe always shows the cut-out:**
+  - "Remove background" on an existing piece is saved right away, even if you close the window without pressing Save.
+  - Pages refresh when a cut-out finishes.
+- **Pages refresh** with fresh data every time you switch tabs, tap the current tab, or come back to the app.
+- **Removed:** the price field, cost-per-wear stats and the currency setting.
+
 ## v2.0.1
 - Renamed from FitBud to **Fitty** (logo, app name, home-screen name, backup files). Your data and old backups still work.
 
@@ -36,7 +48,6 @@
   - **collecting dust** (pieces not worn in 30+ days)
   - usage by category
   - your color palette
-  - **cost per wear** (add a price to pieces; currency in Settings, default IQD)
   - a comfort summary
 
 **Also**

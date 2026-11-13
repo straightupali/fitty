@@ -51,8 +51,22 @@ const BG_LIB_URL = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0
 let worker = null, workerBroken = false, jobSeq = 0;
 const jobs = new Map();
 
-function getWorker() {
+// The worker must start *after* the service worker controls the page, otherwise the AI model
+// it downloads isn't saved for offline use.
+async function offlineCacheReady() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:' || navigator.serviceWorker.controller) return;
+  const reg = await navigator.serviceWorker.getRegistration().catch(() => null);
+  if (!reg) return;
+  await Promise.race([
+    new Promise(r => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true })),
+    new Promise(r => setTimeout(r, 5000)),
+  ]);
+}
+
+async function getWorker() {
   if (workerBroken || typeof Worker === 'undefined') return null;
+  if (worker) return worker;
+  await offlineCacheReady();
   if (worker) return worker;
   try {
     worker = new Worker(new URL('./bg-worker.js', import.meta.url), { type: 'module' });
@@ -82,25 +96,53 @@ function getWorker() {
   return worker;
 }
 
-function viaWorker(w, blob, onProgress, warmup = false) {
+function viaWorker(w, blob, onProgress, mode = null) {
   return new Promise((resolve, reject) => {
     const id = ++jobSeq;
     jobs.set(id, { resolve, reject, onProgress });
-    w.postMessage({ id, blob, warmup });
+    w.postMessage({ id, blob, warmup: mode === 'warmup', preload: mode === 'preload' });
   });
 }
 
-// Start downloading/compiling the model in the background before it's needed.
-export function warmUpBackgroundRemoval() {
-  const w = getWorker();
-  if (w) viaWorker(w, null, null, true).catch(() => { });
+// Start loading the library in the background before it's needed.
+export async function warmUpBackgroundRemoval() {
+  const w = await getWorker();
+  if (w) viaWorker(w, null, null, 'warmup').catch(() => { });
+}
+
+// Download everything the cut-out needs (~40 MB) so it works without internet.
+export async function prepareOffline(onProgress) {
+  const w = await getWorker();
+  if (!w) throw new Error('Not supported in this browser');
+  await viaWorker(w, null, onProgress, 'preload');
+}
+
+// Has the AI model been saved for offline use?
+export async function offlineReady() {
+  try {
+    if (!('caches' in self)) return false;
+    const keys = await (await caches.open('fitbud-runtime')).keys();
+    const urls = keys.map(k => k.url);
+    return urls.some(u => u.includes('cdn.jsdelivr.net')) && urls.some(u => u.includes('resources.json')) && urls.filter(u => u.includes('staticimgly.com')).length > 3;
+  } catch { return false; }
+}
+
+export const looksLikeNetworkError = (err) => !navigator.onLine || /fetch|network|load failed|import|offline/i.test(String(err && err.message || err));
+
+// A failed download can stay "remembered" inside a worker, so after a network error we start a fresh one.
+function resetWorker() {
+  if (worker) { try { worker.terminate(); } catch { } worker = null; }
+  for (const [id, job] of jobs) { job.reject(new Error('reset')); jobs.delete(id); }
 }
 
 export async function removeBackground(blob, onProgress) {
-  const w = getWorker();
+  const w = await getWorker();
   if (w) {
     try { return await viaWorker(w, blob, onProgress); }
-    catch (err) { if (!err.fallback) throw err; }
+    catch (err) {
+      if (looksLikeNetworkError(err)) resetWorker();
+      if (!err.fallback) throw err;
+    }
   }
   return removeOnMainThread(blob, onProgress);
 }
