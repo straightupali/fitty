@@ -44,6 +44,8 @@ export async function shrink(blob, maxSide = MAX_SIDE) {
   return out;
 }
 
+import { cleanCutout } from './cutout-clean.js';
+
 // ---------- Background removal ----------
 // Runs in a Web Worker (js/bg-worker.js) so the page stays responsive while the AI works.
 // If the browser can't run it in a worker (very old Safari), it falls back to the main thread.
@@ -166,7 +168,9 @@ async function trimTransparent(blob) {
   c.width = img.naturalWidth; c.height = img.naturalHeight;
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
-  const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height);
+  const imgData = ctx.getImageData(0, 0, c.width, c.height);
+  if (cleanCutout(imgData.data, c.width, c.height).changed) ctx.putImageData(imgData, 0, 0);
+  const { data, width, height } = imgData;
   let minX = width, minY = height, maxX = -1, maxY = -1;
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     if (data[(y * width + x) * 4 + 3] > 12) {

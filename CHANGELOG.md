@@ -1,5 +1,14 @@
 # Fitty changelog
 
+## v2.4
+- **Cleaner background removal on busy backgrounds** (speckled floors, patterned rugs, textured stone). After the AI runs, Fitty now:
+  - learns the background colors and drops pixels the AI was unsure about that match them;
+  - keeps only the shape(s) that look like the clothing (solid and fairly central), removing scattered leftovers and frame-like rings around the garment;
+  - makes the garment fully solid where the AI left it half see-through;
+  - keeps pairs together (e.g. both shoes).
+- Runs in the background worker and adds less than 0.1 s.
+- **Redo cut-out** button on pieces that already have a cut-out. It re-runs from the original photo, so older cut-outs can get the new cleanup.
+
 ## v2.3
 - **Log what you're actually wearing.** Under the suggestion, tap **Wearing something else? Log it**, then pick one of your fits or **New outfit**.
 - A new outfit opens the editor as *Today's outfit*. **Save & wear today** adds it to your Fits and logs it for the day in one step.

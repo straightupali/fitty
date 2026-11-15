@@ -20,7 +20,7 @@ const CAT = Object.fromEntries(CATS.map((c, i) => [c.id, { ...c, i }]));
 const GROUP_COLORS = ['#D9A79A', '#A9BFA8', '#A7B8CC', '#E2C38E', '#C7B2D6', '#9FC9C6', '#E5A9B8', '#B9AE9E'];
 const DEFAULT_SETTINGS = { location: DEFAULT_LOCATION, mapping: DEFAULT_MAPPING, blockDays: 2, fadeDays: 7, autoBg: true,
   learn: true, learnSince: 0 };
-const APP_VERSION = '2.3';
+const APP_VERSION = '2.4';
 const WEIGHT_WORDS = ['Very light', 'Light', 'Mild', 'Medium', 'Warm', 'Heaviest'];
 
 const ICONS = {
@@ -1334,6 +1334,7 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
           <button class="btn sm" data-act="gallery">${icon('image')} ${d.image ? 'Replace' : 'Photo'}</button>
           <button class="btn sm" data-act="camera">${icon('camera')} Camera</button>
           ${d.image && !d.original ? `<button class="btn sm" data-act="bg" ${busy ? 'disabled' : ''}>${icon('wand')} Remove background</button>` : ''}
+          ${d.original ? `<button class="btn sm" data-act="bg" ${busy ? 'disabled' : ''}>${icon('wand')} Redo cut-out</button>` : ''}
           ${d.original ? `<button class="btn sm" data-act="restore">${icon('undo')} Original photo</button>` : ''}
           ${d.image ? `<button class="btn sm ghost danger" data-act="noimg">Remove photo</button>` : ''}
           <input type="file" accept="image/*" hidden data-file="gallery">
@@ -1372,8 +1373,9 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
       else if (act === 'bg') {
         busy = true; h.rerender();
         try {
-          const out = await removeBackground(d.image);
-          d.original = d.image; d.image = out; imageChanged = false; await autoColor();
+          const src = d.original || d.image;          // redo always starts from the original photo
+          const out = await removeBackground(src);
+          d.original = src; d.image = out; imageChanged = false; await autoColor();
           if (!isNew) {
             // Apply it straight away — no need to press Save for the Wardrobe to update.
             const stored = await db.get('pieces', d.id);

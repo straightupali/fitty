@@ -1,6 +1,7 @@
 // Fitty — background removal worker.
 // Runs the AI cut-out off the main thread so the page never freezes.
 // The model session is created once and reused for every photo.
+import { cleanCutout } from './cutout-clean.js';
 const LIB_URL = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm';
 const MAX_SIDE = 900;
 
@@ -66,7 +67,11 @@ async function trimAndShrink(blob) {
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(bmp, 0, 0);
   bmp.close && bmp.close();
-  const data = ctx.getImageData(0, 0, w, h).data;
+  const img = ctx.getImageData(0, 0, w, h);
+  // Remove leftover background specks and make the garment solid again.
+  const res = cleanCutout(img.data, w, h);
+  if (res.changed) ctx.putImageData(img, 0, 0);
+  const data = img.data;
   const opaque = (x, y) => data[(y * w + x) * 4 + 3] > 12;
   const rowHas = (y) => { for (let x = 0; x < w; x++) if (opaque(x, y)) return true; return false; };
   const colHas = (x, y0, y1) => { for (let y = y0; y <= y1; y++) if (opaque(x, y)) return true; return false; };
