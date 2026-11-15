@@ -1,5 +1,10 @@
 # Fitty changelog
 
+## v2.2
+- **Fixed: photos turning into "?" after editing a piece on iPhone/Safari.** Photos are now stored as raw bytes instead of Blobs, which avoids a Safari bug that deleted the photo data when a piece was saved again.
+- Existing photos are converted automatically the first time v2.2 opens.
+- Photos the browser had already lost can't be recovered. Those pieces show **📷 add photo again**; tap one and add the photo once.
+
 ## v2.1
 - **Piece window** (new/edit piece) can be dragged and minimized like the fit editor, and the page behind stays usable. On phones, a minimized window sits above the tab bar.
 - **Offline background removal fixed:**

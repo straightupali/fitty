@@ -39,6 +39,31 @@ function tx(store, mode, fn) {
   }));
 }
 
+// ---------- Photos are stored as raw bytes, not Blobs ----------
+// Safari/iOS has a bug: when a record that holds a Blob is saved again (e.g. you edit a piece),
+// the photo data can be deleted and the image shows as "?". Raw bytes (ArrayBuffer) don't have this problem.
+const BLOB_FIELDS = { pieces: ['image', 'original'] };
+
+async function encode(store, obj) {
+  const fields = BLOB_FIELDS[store];
+  if (!fields) return obj;
+  const out = { ...obj };
+  for (const f of fields) {
+    const v = out[f];
+    if (v instanceof Blob) out[f] = { __bytes: await v.arrayBuffer(), type: v.type || 'image/png' };
+  }
+  return out;
+}
+function decode(store, obj) {
+  const fields = BLOB_FIELDS[store];
+  if (!fields || !obj) return obj;
+  for (const f of fields) {
+    const v = obj[f];
+    if (v && v.__bytes) obj[f] = new Blob([v.__bytes], { type: v.type });
+  }
+  return obj;
+}
+
 function reqP(req) {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result);
@@ -47,13 +72,17 @@ function reqP(req) {
 }
 
 export const db = {
-  all: (store) => tx(store, 'readonly', s => reqP(s.getAll())),
-  get: (store, id) => tx(store, 'readonly', s => reqP(s.get(id))),
-  put: (store, obj) => {
+  all: async (store) => (await tx(store, 'readonly', s => reqP(s.getAll()))).map(o => decode(store, o)),
+  get: async (store, id) => decode(store, await tx(store, 'readonly', s => reqP(s.get(id)))),
+  put: async (store, obj) => {
     if (store !== 'meta') obj.updatedAt = Date.now();
-    return tx(store, 'readwrite', s => reqP(s.put(obj)));
+    const enc = await encode(store, obj);          // must finish before the transaction opens
+    return tx(store, 'readwrite', s => reqP(s.put(enc)));
   },
-  putRaw: (store, obj) => tx(store, 'readwrite', s => reqP(s.put(obj))),
+  putRaw: async (store, obj) => {
+    const enc = await encode(store, obj);
+    return tx(store, 'readwrite', s => reqP(s.put(enc)));
+  },
   del: (store, id) => tx(store, 'readwrite', s => reqP(s.delete(id))),
   clear: (store) => tx(store, 'readwrite', s => reqP(s.clear())),
   async getMeta(key, fallback) {
@@ -65,6 +94,32 @@ export const db = {
 
 export const uid = () =>
   (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+
+// One-time repair: convert photos saved as Blobs (before v2.2) to raw bytes.
+// Photos Safari already lost can't be recovered — those pieces are flagged so you can re-add the photo.
+export async function migratePhotos() {
+  const raw = await tx('pieces', 'readonly', s => reqP(s.getAll()));
+  let fixed = 0, lost = 0;
+  for (const p of raw) {
+    let changed = false;
+    for (const f of BLOB_FIELDS.pieces) {
+      const v = p[f];
+      if (!(v instanceof Blob)) continue;
+      changed = true;
+      try {
+        const buf = await v.arrayBuffer();
+        if (!buf.byteLength) throw new Error('empty');
+        p[f] = { __bytes: buf, type: v.type || 'image/png' };
+        fixed++;
+      } catch {
+        p[f] = null;
+        if (f === 'image') { p.imageLost = true; lost++; }
+      }
+    }
+    if (changed) await tx('pieces', 'readwrite', s => reqP(s.put(p)));
+  }
+  return { fixed, lost };
+}
 
 // Ask the browser not to evict our data when storage is tight.
 export async function persistStorage() {

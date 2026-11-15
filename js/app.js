@@ -1,5 +1,5 @@
 // Fitty — main app (vanilla JS, no build step)
-import { db, uid, persistStorage, exportAll, importAll } from './db.js';
+import { db, uid, persistStorage, exportAll, importAll, migratePhotos } from './db.js';
 import { DEFAULT_LOCATION, DEFAULT_MAPPING, weightForTemp, searchCity, getForecast, describeCode } from './weather.js';
 import { scoreFits, pickWeighted, toISO, fromISO, daysBetween } from './recommend.js';
 import { shrink, removeBackground, imageURL, warmUpBackgroundRemoval, prepareOffline, offlineReady, looksLikeNetworkError } from './images.js';
@@ -20,7 +20,7 @@ const CAT = Object.fromEntries(CATS.map((c, i) => [c.id, { ...c, i }]));
 const GROUP_COLORS = ['#D9A79A', '#A9BFA8', '#A7B8CC', '#E2C38E', '#C7B2D6', '#9FC9C6', '#E5A9B8', '#B9AE9E'];
 const DEFAULT_SETTINGS = { location: DEFAULT_LOCATION, mapping: DEFAULT_MAPPING, blockDays: 2, fadeDays: 7, autoBg: true,
   learn: true, learnSince: 0 };
-const APP_VERSION = '2.1';
+const APP_VERSION = '2.2';
 const WEIGHT_WORDS = ['Very light', 'Light', 'Mild', 'Medium', 'Warm', 'Heaviest'];
 
 const ICONS = {
@@ -432,6 +432,7 @@ function itemTile(p, { remove = false, selectable = false, selected = false, act
     <div class="label"><b>${esc(p.name)}</b><span>${p.color ? `<i class="cdot" style="background:${p.color}" title="${esc(colorInfo(p.color).name)}"></i>` : ''}${esc(sub ?? CAT[p.category].one)}</span></div>
     <span class="busy ${S.bgBusy.has(p.id) ? '' : 'hidden'}" data-busy="${p.id}">✂︎ cutting out…</span>
     ${p.bgPending && !S.bgBusy.has(p.id) ? '<span class="pending">⏳ cut-out when online</span>' : ''}
+    ${p.imageLost && !p.image ? '<span class="pending">📷 add photo again</span>' : ''}
     ${remove ? `<button class="x" data-act="remove" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">${icon('x')}</button>` : ''}
     ${selectable ? `<span class="check">${icon('check')}</span>` : ''}
   </${tag}>`;
@@ -1269,7 +1270,7 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
     d.color = c; d.colorSource = c ? 'name' : null;
   };
   const setImage = async (f) => {
-    try { d.image = await shrink(f); d.original = null; imageChanged = true; await autoColor(); } catch { toast('Could not read that image'); }
+    try { d.image = await shrink(f); d.original = null; delete d.imageLost; imageChanged = true; await autoColor(); } catch { toast('Could not read that image'); }
     h.rerender();
   };
   const url = () => {
@@ -1850,6 +1851,8 @@ async function reloadData() {
 
 async function boot() {
   applyTheme();
+  let repaired = null;
+  try { repaired = await migratePhotos(); } catch (e) { console.warn('Photo repair failed', e); }
   await reloadData();
   // Afternoon/evening → planning tomorrow; morning → today.
   S.mode = new Date().getHours() >= 14 ? 'tomorrow' : 'today';
@@ -1858,6 +1861,7 @@ async function boot() {
   render();
   persistStorage();
   loadWeather();
+  if (repaired && repaired.lost) toast(`${repaired.lost} photo${repaired.lost > 1 ? 's were' : ' was'} lost by the browser — tap the piece${repaired.lost > 1 ? 's' : ''} marked 📷 to add ${repaired.lost > 1 ? 'them' : 'it'} again`, null, 7000);
   setTimeout(backfillColors, 800);
   setTimeout(retryPendingBg, 1500);
   maybeShowWhatsNew();
