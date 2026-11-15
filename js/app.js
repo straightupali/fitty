@@ -20,7 +20,7 @@ const CAT = Object.fromEntries(CATS.map((c, i) => [c.id, { ...c, i }]));
 const GROUP_COLORS = ['#D9A79A', '#A9BFA8', '#A7B8CC', '#E2C38E', '#C7B2D6', '#9FC9C6', '#E5A9B8', '#B9AE9E'];
 const DEFAULT_SETTINGS = { location: DEFAULT_LOCATION, mapping: DEFAULT_MAPPING, blockDays: 2, fadeDays: 7, autoBg: true,
   learn: true, learnSince: 0 };
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 const WEIGHT_WORDS = ['Very light', 'Light', 'Mild', 'Medium', 'Warm', 'Heaviest'];
 
 const ICONS = {
@@ -719,7 +719,9 @@ function viewToday() {
   if (!S.fits.length) {
     recHTML = `<div class="card empty fade-in"><div class="art">🧥</div><h2>No fits yet</h2>
       <p>Build your first outfit — add the pieces, set how warm it is, and Fitty takes it from there.</p>
-      <button class="btn primary lg" data-act="new-fit">${icon('plus')} Create a fit</button></div>`;
+      <div class="fab-row" style="justify-content:center;flex-wrap:wrap">
+        <button class="btn primary lg" data-act="new-fit">${icon('plus')} Create a fit</button>
+        <button class="btn lg" data-act="wear-other">Log what I'm wearing</button></div></div>`;
   } else if (wear) {
     const fit = fitById(wear.fitId);
     const ps = sortPieces(wear.pieceIds);
@@ -741,7 +743,7 @@ function viewToday() {
         <p>${inGroup ? (skips.size ? 'You skipped the rest, and the others are resting after being worn recently.' : 'Every fit here was worn in the last couple of days. Add more fits or change the group.') : 'Add fits to this group from the Fits tab.'}</p>
         <div class="fab-row" style="justify-content:center">
           ${skips.size ? `<button class="btn" data-act="reset-skips">${icon('undo')} Bring back skipped</button>` : ''}
-          <button class="btn primary" data-act="new-fit">${icon('plus')} New fit</button>
+          <button class="btn primary" data-act="wear-other">${icon('plus')} Log what I'm wearing</button>
         </div></div>`;
     } else {
       const f = pick.fit;
@@ -767,7 +769,9 @@ function viewToday() {
         <div class="rec-actions">
           <button class="btn lg" data-act="skip" data-id="${f.id}">${icon('shuffle')} Skip</button>
           <button class="btn lg primary" data-act="accept" data-id="${f.id}">${icon('check')} Wear this</button>
-        </div></div>`;
+        </div>
+        <button class="wear-other" data-act="wear-other">${icon('plus')} Wearing something else? Log it</button>
+        </div>`;
     }
   }
 
@@ -849,6 +853,7 @@ function afterToday(view) {
       }
       case 'reset-skips': { const d = daily(); delete d.skips[date]; saveDaily(d); render(); break; }
       case 'accept': await acceptFit(fitById(a.dataset.id), date); break;
+      case 'wear-other': openWearOther(date); break;
       case 'undo-wear': undoWear(a.dataset.id); break;
       case 'feel': await setFeel(a.dataset.id, Number(a.dataset.v)); render(); break;
       case 'feel-skip': await setFeel(a.dataset.id, null); render(); break;
@@ -868,8 +873,11 @@ function afterToday(view) {
   };
 }
 
-async function acceptFit(fit, date) {
+async function acceptFit(fit, date, msg = null) {
   if (!fit) return;
+  // One outfit per day: logging a new one replaces whatever was logged for that date.
+  for (const old of S.wears.filter(x => x.date === date)) await db.del('wears', old.id);
+  S.wears = S.wears.filter(x => x.date !== date);
   const w = dayWeather(date);
   const wear = {
     id: uid(), fitId: fit.id, fitName: fit.name, date, pieceIds: [...fit.pieceIds],
@@ -878,7 +886,30 @@ async function acceptFit(fit, date) {
   await db.put('wears', wear);
   S.wears.push(wear);
   render();
-  toast(`Logged for ${niceDate(date).toLowerCase()}`, { label: 'Undo', run: () => undoWear(wear.id) });
+  toast(msg || `Logged for ${niceDate(date).toLowerCase()}`, { label: 'Undo', run: () => undoWear(wear.id) });
+}
+
+// "What are you wearing?" — a new outfit first, then your existing fits.
+function logGrid() {
+  const fits = [...S.fits].filter(f => f.pieceIds.length).sort((a, b) => a.name.localeCompare(b.name));
+  return `<div class="fit-grid log-grid">
+    <button class="fitcard newfit" data-act="log-new"><span class="nf-plus">${icon('plus')}</span><div class="body"><div class="name">New outfit</div><div class="sub"><span>Saved to your fits</span></div></div></button>
+    ${fits.map(f => `<button class="fitcard" data-act="log" data-id="${f.id}">${collage(f.pieceIds)}<div class="body"><div class="name">${esc(f.name)}</div></div></button>`).join('')}
+  </div>`;
+}
+function dayWord(date) {
+  return date === todayISO() ? 'today' : date === tomorrowISO() ? 'tomorrow' : fromISO(date).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+function openWearOther(date) {
+  if (!S.fits.length) { openFitEditor(null, { logDate: date }); return; }
+  openSheet({
+    title: `What are you wearing ${dayWord(date)}?`,
+    body: () => `<p class="small muted" style="margin:0 0 14px">Pick one of your fits, or put together a new outfit — it's saved to your fits too.</p>${logGrid()}`,
+    onAct: async (act, el, e, hh) => {
+      if (act === 'log') { hh.close(); await acceptFit(fitById(el.dataset.id), date); }
+      if (act === 'log-new') { hh.close(); setTimeout(() => openFitEditor(null, { logDate: date }), 50); }
+    },
+  });
 }
 
 async function undoWear(id) {
@@ -1005,6 +1036,7 @@ async function openIdeas() {
   });
 }
 
+const cap1 = (t) => t.charAt(0).toUpperCase() + t.slice(1);
 let openEditor = null; // only one fit editor at a time
 function openFitEditor(fit, preset = {}) {
   if (openEditor && !openEditor.closed) {
@@ -1020,7 +1052,8 @@ function openFitEditor(fit, preset = {}) {
   const draft = fit
     ? { ...fit, pieceIds: [...fit.pieceIds] }
     : {
-      id: uid(), name: '', pieceIds: preset.pieceIds ? [...preset.pieceIds] : [], weight: preset.weight ?? tw ?? 2,
+      id: uid(), name: '', pieceIds: preset.pieceIds ? [...preset.pieceIds] : [],
+      weight: preset.weight ?? (preset.logDate ? targetWeight(preset.logDate) : null) ?? tw ?? 2,
       groupId: preset.groupId ?? (S.fitsGroup !== 'all' && S.fitsGroup !== 'none' ? S.fitsGroup : (S.group !== 'all' ? S.group : null)),
       createdAt: Date.now(),
     };
@@ -1048,7 +1081,9 @@ function openFitEditor(fit, preset = {}) {
 
   const h = openSheet({
     cls: 'full', movable: 'editor',
-    title: () => (isNew ? 'New fit' : 'Edit fit'),
+    title: () => (preset.logDate
+      ? ([todayISO(), tomorrowISO()].includes(preset.logDate) ? `${cap1(dayWord(preset.logDate))}'s outfit` : `Outfit for ${dayWord(preset.logDate)}`)
+      : isNew ? 'New fit' : 'Edit fit'),
     body: () => {
       const groupOpts = `<option value="">No group</option>${S.groups.map(g => `<option value="${g.id}" ${draft.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}<option value="__new">+ New group…</option>`;
       const slots = CATS.map(c => {
@@ -1077,7 +1112,7 @@ function openFitEditor(fit, preset = {}) {
     },
     foot: () => `${isNew ? '' : `<button class="btn danger" data-act="delete">${icon('trash')}</button>`}
       <button class="btn grow" data-close>Cancel</button>
-      <button class="btn grow primary" data-act="save">Save fit</button>`,
+      <button class="btn grow primary" data-act="save">${preset.logDate ? `${icon('check')} Save & wear ${esc(preset.logDate === todayISO() ? 'today' : preset.logDate === tomorrowISO() ? 'tomorrow' : 'that day')}` : 'Save fit'}</button>`,
     onInput: (e) => {
       const k = e.target.dataset.k;
       if (k === 'name') { draft.name = e.target.value; dirty = true; }
@@ -1112,8 +1147,9 @@ function openFitEditor(fit, preset = {}) {
         const i = S.fits.findIndex(f => f.id === draft.id);
         if (i >= 0) S.fits[i] = draft; else S.fits.push(draft);
         dirty = false;
-        h.close(); render();
-        toast(isNew ? 'Fit saved' : 'Fit updated');
+        h.close();
+        if (preset.logDate) await acceptFit(draft, preset.logDate, `Saved to your fits · wearing it ${dayWord(preset.logDate)}`);
+        else { render(); toast(isNew ? 'Fit saved' : 'Fit updated'); }
       } else if (act === 'delete') {
         if (!(await ask({ title: 'Delete this fit?', text: 'Its pieces stay in your wardrobe and past history is kept.', ok: 'Delete', danger: true }))) return;
         await db.del('fits', draft.id);
@@ -1556,9 +1592,7 @@ function openDaySheet(date) {
           ${w.date <= todayISO() ? `<div class="feel-row"><span class="small">How did it feel?</span>
             ${[[-1, '🥶 Too cold'], [0, '👌 Just right'], [1, '🥵 Too hot']].map(([v, t]) => `<button class="chip ${w.feel === v ? 'active' : ''}" data-act="feel" data-v="${v}">${t}</button>`).join('')}</div>` : ''}`;
       }
-      const fits = [...S.fits].filter(f => f.pieceIds.length).sort((a, b) => a.name.localeCompare(b.name));
-      return `<p class="muted" style="margin-top:0">Nothing logged. Forgot to log? Pick the fit you wore:</p>
-        ${fits.length ? `<div class="fit-grid" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">${fits.map(f => `<button class="fitcard" data-act="log" data-id="${f.id}">${collage(f.pieceIds)}<div class="body"><div class="name" style="font-size:14px">${esc(f.name)}</div></div></button>`).join('')}</div>` : '<p class="small muted">Create a fit first.</p>'}`;
+      return `<p class="muted" style="margin-top:0">Nothing logged. Forgot to log? Pick the fit you wore, or add a new outfit:</p>${logGrid()}`;
     },
     foot: () => {
       const w = S.wears.find(x => x.date === date);
@@ -1573,11 +1607,9 @@ function openDaySheet(date) {
         S.wears = S.wears.filter(w => w.id !== el.dataset.id);
         h.close(); render(); toast('Removed from history');
       } else if (act === 'log') {
-        const fit = fitById(el.dataset.id);
-        const wd = dayWeather(date);
-        const wear = { id: uid(), fitId: fit.id, fitName: fit.name, date, pieceIds: [...fit.pieceIds], feels: wd ? wd.feels : null, code: wd ? wd.code : null, targetWeight: null, createdAt: Date.now() };
-        await db.put('wears', wear); S.wears.push(wear);
-        h.close(); render(); toast(`Logged ${fit.name}`);
+        h.close(); await acceptFit(fitById(el.dataset.id), date, `Logged ${fitById(el.dataset.id).name}`);
+      } else if (act === 'log-new') {
+        h.close(); setTimeout(() => openFitEditor(null, { logDate: date }), 50);
       }
     },
   });

@@ -487,3 +487,14 @@ button.item { border: 0; padding: 0; text-align: left; }
   .sheet.movable.collapsed { margin-bottom: calc(68px + var(--safe-b)); border-radius: 22px; }
   .sheet.movable.collapsed .sheet-head { padding-bottom: 12px; }
 }
+
+/* log what you're wearing */
+.wear-other { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; margin-top: 12px; padding: 10px; background: none; border: 1.5px dashed var(--line); border-radius: 14px; color: var(--ink-2); font-size: 14px; }
+.wear-other:hover { border-color: var(--accent); color: var(--accent); }
+.wear-other svg { width: 16px; height: 16px; }
+.log-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important; }
+.log-grid .fitcard .name { font-size: 14px; }
+.fitcard.newfit { display: flex; flex-direction: column; border: 1.5px dashed var(--tile-2); box-shadow: none; background: transparent; }
+.fitcard.newfit .nf-plus { aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; color: var(--accent); }
+.fitcard.newfit .nf-plus svg { width: 34px; height: 34px; }
+.fitcard.newfit:hover { border-color: var(--accent); }

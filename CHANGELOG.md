@@ -1,5 +1,11 @@
 # Fitty changelog
 
+## v2.3
+- **Log what you're actually wearing.** Under the suggestion, tap **Wearing something else? Log it**, then pick one of your fits or **New outfit**.
+- A new outfit opens the editor as *Today's outfit*. **Save & wear today** adds it to your Fits and logs it for the day in one step.
+- Works for **Tomorrow** too, and from **History**: tap an empty past day, then **New outfit**, to log a day you forgot.
+- Logging a different outfit for a day replaces what was logged before, so it's always one outfit per day.
+
 ## v2.2
 - **Fixed: photos turning into "?" after editing a piece on iPhone/Safari.** Photos are now stored as raw bytes instead of Blobs, which avoids a Safari bug that deleted the photo data when a piece was saved again.
 - Existing photos are converted automatically the first time v2.2 opens.
