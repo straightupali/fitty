@@ -1,6 +1,6 @@
 // Fitty service worker — makes the app work offline.
 // Bump VERSION whenever you change app files so phones pick up the update.
-const VERSION = 'fitty-v2.4.0';
+const VERSION = 'fitty-v2.5.0';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/weather.js', './js/recommend.js', './js/images.js', './js/bg-worker.js',

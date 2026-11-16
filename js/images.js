@@ -1,6 +1,6 @@
 // Fitty — image helpers: downscale, background removal (on-device), object URL cache.
 
-const MAX_SIDE = 900;
+const MAX_SIDE = 1024;   // matches the cut-out AI's working resolution
 
 function loadImage(blob) {
   return new Promise((resolve, reject) => {
@@ -98,11 +98,18 @@ async function getWorker() {
   return worker;
 }
 
+// 'medium' (best, ~88 MB) or 'small' (fast, ~44 MB)
+let cutoutModel = 'medium';
+export function setCutoutModel(m) { cutoutModel = m === 'small' ? 'small' : 'medium'; }
+export const getCutoutModel = () => cutoutModel;
+
+function markReady() { try { localStorage.setItem('fitty:bgReady:' + cutoutModel, '1'); } catch { } }
+
 function viaWorker(w, blob, onProgress, mode = null) {
   return new Promise((resolve, reject) => {
     const id = ++jobSeq;
-    jobs.set(id, { resolve, reject, onProgress });
-    w.postMessage({ id, blob, warmup: mode === 'warmup', preload: mode === 'preload' });
+    jobs.set(id, { resolve: (v) => { if (mode !== 'warmup') markReady(); resolve(v); }, reject, onProgress });
+    w.postMessage({ id, blob, model: cutoutModel, warmup: mode === 'warmup', preload: mode === 'preload' });
   });
 }
 
@@ -112,20 +119,24 @@ export async function warmUpBackgroundRemoval() {
   if (w) viaWorker(w, null, null, 'warmup').catch(() => { });
 }
 
-// Download everything the cut-out needs (~40 MB) so it works without internet.
+// Download everything the cut-out needs (~88 MB Best / ~44 MB Fast) so it works without internet.
 export async function prepareOffline(onProgress) {
   const w = await getWorker();
   if (!w) throw new Error('Not supported in this browser');
   await viaWorker(w, null, onProgress, 'preload');
 }
 
-// Has the AI model been saved for offline use?
+// Has the current AI model been saved for offline use?
 export async function offlineReady() {
   try {
     if (!('caches' in self)) return false;
     const keys = await (await caches.open('fitbud-runtime')).keys();
     const urls = keys.map(k => k.url);
-    return urls.some(u => u.includes('cdn.jsdelivr.net')) && urls.some(u => u.includes('resources.json')) && urls.filter(u => u.includes('staticimgly.com')).length > 3;
+    const filesCached = urls.some(u => u.includes('cdn.jsdelivr.net')) && urls.some(u => u.includes('resources.json')) && urls.filter(u => u.includes('staticimgly.com')).length > 3;
+    if (!filesCached) return false;
+    const flag = localStorage.getItem('fitty:bgReady:' + cutoutModel);
+    // Before v2.5 only the small model existed, so an older cache counts for "small".
+    return !!flag || cutoutModel === 'small';
   } catch { return false; }
 }
 
@@ -155,21 +166,30 @@ async function removeOnMainThread(blob, onProgress) {
   if (!bgLib) bgLib = await import(/* @vite-ignore */ BG_LIB_URL);
   const fn = bgLib.removeBackground || bgLib.default;
   const result = await fn(blob, {
-    model: 'small',
+    model: cutoutModel,
     output: { format: 'image/png' },
     progress: (key, current, total) => { if (onProgress && total) onProgress(Math.round((current / total) * 100), key); },
   });
-  return trimTransparent(result);
+  return trimTransparent(result, blob);
 }
 
-async function trimTransparent(blob) {
+async function trimTransparent(blob, originalBlob = null) {
   const img = await loadImage(blob);
   const c = document.createElement('canvas');
   c.width = img.naturalWidth; c.height = img.naturalHeight;
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
   const imgData = ctx.getImageData(0, 0, c.width, c.height);
-  if (cleanCutout(imgData.data, c.width, c.height).changed) ctx.putImageData(imgData, 0, 0);
+  let orig = null;
+  if (originalBlob) {
+    try {
+      const o = await loadImage(originalBlob);
+      const oc = document.createElement('canvas'); oc.width = c.width; oc.height = c.height;
+      const octx = oc.getContext('2d', { willReadFrequently: true }); octx.drawImage(o, 0, 0, c.width, c.height);
+      orig = octx.getImageData(0, 0, c.width, c.height).data;
+    } catch { orig = null; }
+  }
+  if (cleanCutout(imgData.data, c.width, c.height, orig).changed) ctx.putImageData(imgData, 0, 0);
   const { data, width, height } = imgData;
   let minX = width, minY = height, maxX = -1, maxY = -1;
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {

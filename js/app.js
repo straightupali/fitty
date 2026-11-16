@@ -2,7 +2,7 @@
 import { db, uid, persistStorage, exportAll, importAll, migratePhotos } from './db.js';
 import { DEFAULT_LOCATION, DEFAULT_MAPPING, weightForTemp, searchCity, getForecast, describeCode } from './weather.js';
 import { scoreFits, pickWeighted, toISO, fromISO, daysBetween } from './recommend.js';
-import { shrink, removeBackground, imageURL, warmUpBackgroundRemoval, prepareOffline, offlineReady, looksLikeNetworkError } from './images.js';
+import { shrink, removeBackground, imageURL, warmUpBackgroundRemoval, prepareOffline, offlineReady, looksLikeNetworkError, setCutoutModel } from './images.js';
 import { PALETTE, colorInfo, colorFromName, extractColor, harmony } from './colors.js';
 import { computeLearning, effectiveWeight } from './learn.js';
 import { buildPlan, repickDay } from './planner.js';
@@ -19,8 +19,8 @@ const CATS = [
 const CAT = Object.fromEntries(CATS.map((c, i) => [c.id, { ...c, i }]));
 const GROUP_COLORS = ['#D9A79A', '#A9BFA8', '#A7B8CC', '#E2C38E', '#C7B2D6', '#9FC9C6', '#E5A9B8', '#B9AE9E'];
 const DEFAULT_SETTINGS = { location: DEFAULT_LOCATION, mapping: DEFAULT_MAPPING, blockDays: 2, fadeDays: 7, autoBg: true,
-  learn: true, learnSince: 0 };
-const APP_VERSION = '2.4';
+  learn: true, learnSince: 0, cutQuality: 'best' };
+const APP_VERSION = '2.5';
 const WEIGHT_WORDS = ['Very light', 'Light', 'Mild', 'Medium', 'Warm', 'Heaviest'];
 
 const ICONS = {
@@ -1678,6 +1678,10 @@ function viewSettings() {
       <div class="card pad">
         <div class="toggle"><div><h3>Auto background removal</h3><p class="small muted" style="margin:4px 0 0">Cuts clothes out of photos on your device.</p></div>
           <label class="switch"><input type="checkbox" data-k="autobg" ${st.autoBg ? 'checked' : ''}><span></span></label></div>
+        <div class="toggle" style="margin-top:14px">
+          <div><b class="small">Cut-out quality</b><p class="small muted" style="margin:2px 0 0">${st.cutQuality === 'fast' ? 'Fast: ~44 MB model, quicker, slightly rougher edges.' : 'Best: full-detail ~88 MB model — most accurate edges and backgrounds.'}</p></div>
+          <div class="seg"><button class="${st.cutQuality !== 'fast' ? 'active' : ''}" data-act="cutq" data-q="best">Best</button><button class="${st.cutQuality === 'fast' ? 'active' : ''}" data-act="cutq" data-q="fast">Fast</button></div>
+        </div>
         <div class="offline-row" data-offline>
           <span class="small muted">Checking offline status…</span>
         </div>
@@ -1720,7 +1724,7 @@ async function fillOfflineStatus(view) {
   const ready = await offlineReady();
   el.innerHTML = ready
     ? `<span class="small"><span class="ok-dot"></span>Ready offline — works without internet</span>`
-    : `<span class="small muted">Needs a one-time ~40 MB download to work offline.</span>
+    : `<span class="small muted">Needs a one-time ~${S.settings.cutQuality === 'fast' ? 44 : 88} MB download to work offline.</span>
        <button class="btn sm" data-act="bg-download">${icon('download')} Download now</button>`;
 }
 function afterSettings(view) {
@@ -1778,6 +1782,12 @@ function afterSettings(view) {
     switch (a.dataset.act) {
       case 'install': S.installPrompt.prompt(); S.installPrompt = null; render(); break;
       case 'theme': setTheme(a.dataset.t); break;
+      case 'cutq': {
+        st.cutQuality = a.dataset.q; setCutoutModel(st.cutQuality === 'fast' ? 'small' : 'medium');
+        await saveSettings(); render();
+        toast(st.cutQuality === 'fast' ? 'Fast cut-outs' : 'Best-quality cut-outs');
+        break;
+      }
       case 'bg-download': {
         if (!navigator.onLine) { toast('Connect to the internet first'); return; }
         a.disabled = true; a.textContent = 'Downloading… 0%';
@@ -1881,6 +1891,7 @@ async function reloadData() {
   const saved = await db.getMeta('settings', null);
   S.settings = { ...DEFAULT_SETTINGS, ...(saved || {}) };
   S.settings.mapping = (S.settings.mapping || DEFAULT_MAPPING).map(x => ({ ...x }));
+  setCutoutModel(S.settings.cutQuality === 'fast' ? 'small' : 'medium');
 }
 
 async function boot() {

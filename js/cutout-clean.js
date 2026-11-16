@@ -7,10 +7,25 @@
 const LOW = 30;    // alpha above this = probably part of something
 const FULL = 70;   // alpha above this inside the kept garment = make fully opaque
 
-export function cleanCutout(data, w, h) {
+// `orig` (optional): RGBA of the original photo at the same size. The AI wipes the color of pixels
+// it removes, so background colors must be learned from the original photo.
+export function cleanCutout(data, w, h, orig = null) {
   // 0) Learn the background colors from what the AI clearly removed, then drop *unsure* pixels
   //    that match them (e.g. a dark floor the AI half-kept). Confident pixels are never touched.
-  dropBackgroundColored(data, w, h);
+  const palette = dropBackgroundColored(data, w, h, orig);
+  const result = shapeCleanup(data, w, h);
+  // The AI can distort colors where it was unsure — take kept pixels' colors from the original photo.
+  if (orig && orig.length === data.length) {
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3]) { data[i] = orig[i]; data[i + 1] = orig[i + 1]; data[i + 2] = orig[i + 2]; }
+    result.changed = true;
+  }
+  // 7) Remove the light/dark outline: edge pixels that still carry the background's color
+  //    get recolored from the garment just inside them (shape and transparency stay the same).
+  if (palette && palette.length) { defringe(data, w, h, palette); result.changed = true; }
+  return result;
+}
+
+function shapeCleanup(data, w, h) {
 
   // 1) Work on a coarse grid (~300 px on the long side) — fast and smooths out noise.
   const cell = Math.max(1, Math.ceil(Math.max(w, h) / 300));
@@ -100,12 +115,13 @@ export function cleanCutout(data, w, h) {
   return { changed: true, reason: 'cleaned', kept: keep.size, removedShapes: comps.length - keep.size, removed };
 }
 
-function dropBackgroundColored(data, w, h) {
+function dropBackgroundColored(data, w, h, orig) {
+  if (!orig) return null;  // without the original photo we can't know the background colors
   const n = w * h;
   const step = Math.max(1, Math.floor(n / 6000));
   const samples = [];
-  for (let i = 0; i < n; i += step) if (data[i * 4 + 3] <= 12) samples.push([data[i * 4], data[i * 4 + 1], data[i * 4 + 2]]);
-  if (samples.length < 200) return;
+  for (let i = 0; i < n; i += step) if (data[i * 4 + 3] <= 12) samples.push([orig[i * 4], orig[i * 4 + 1], orig[i * 4 + 2]]);
+  if (samples.length < 200) return null;
   // k-means with k=3 (speckled backgrounds have a couple of colors)
   const k = 3;
   const sorted = samples.slice().sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
@@ -130,6 +146,49 @@ function dropBackgroundColored(data, w, h) {
     if (a === 0 || a >= 160) continue;
     const c = [data[p], data[p + 1], data[p + 2]];
     for (const q of palette) if (dist2(c, q) < T2) { data[p + 3] = 0; break; }
+  }
+  return palette;
+}
+
+function defringe(data, w, h, palette) {
+  const A = (x, y) => data[(y * w + x) * 4 + 3];
+  // edge = visible pixel touching a (mostly) transparent one
+  const edge = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    if (!A(x, y)) continue;
+    if (A(x - 1, y) < 128 || A(x + 1, y) < 128 || A(x, y - 1) < 128 || A(x, y + 1) < 128) edge[y * w + x] = 1;
+  }
+  // two passes: the outer ring, then the ring just inside it
+  for (let pass = 0; pass < 2; pass++) {
+    const next = new Uint8Array(w * h);
+    for (let y = 3; y < h - 3; y++) for (let x = 3; x < w - 3; x++) {
+      const i = y * w + x;
+      if (!edge[i]) continue;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+        const j = (y + dy) * w + (x + dx);
+        if (edge[j] || data[j * 4 + 3] < 250) continue;
+        r += data[j * 4]; g += data[j * 4 + 1]; b += data[j * 4 + 2]; n++;
+      }
+      if (n < 3) { next[i] = 1; continue; }   // nothing solid nearby yet — try again next pass
+      const F = [r / n, g / n, b / n];                 // garment color just inside
+      const c = [data[i * 4], data[i * 4 + 1], data[i * 4 + 2]];
+      // Unmix: how much of this pixel is background?  c ≈ (1-t)·F + t·B
+      let t = 0;
+      for (const B of palette) {
+        const d = [B[0] - F[0], B[1] - F[1], B[2] - F[2]];
+        const len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if (len2 < 30 * 30) continue;                 // garment ≈ background color: can't tell, leave it
+        const tt = ((c[0] - F[0]) * d[0] + (c[1] - F[1]) * d[1] + (c[2] - F[2]) * d[2]) / len2;
+        if (tt > t) t = tt;
+      }
+      if (t > 0.08) {
+        t = Math.min(1, t);
+        data[i * 4] = F[0]; data[i * 4 + 1] = F[1]; data[i * 4 + 2] = F[2];
+        data[i * 4 + 3] = Math.round(data[i * 4 + 3] * (1 - t));
+      }
+    }
+    edge.set(next);
   }
 }
 const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;

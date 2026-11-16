@@ -3,23 +3,23 @@
 // The model session is created once and reused for every photo.
 import { cleanCutout } from './cutout-clean.js';
 const LIB_URL = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm';
-const MAX_SIDE = 900;
+const MAX_SIDE = 1024;   // the AI works at 1024 px — keep all the detail it produces
 
 let libPromise = null;
 let currentJob = null;
 let lastProgress = 0;
 
-// One config object for every call → the library caches the model session.
-const CONFIG = {
-  model: 'small',               // quantized ISNet: smallest download, same quality as before
-  output: { format: 'image/png' },
-  progress: (key, current, total) => {
-    const now = Date.now();
-    if (!currentJob || now - lastProgress < 150) return;
-    lastProgress = now;
-    self.postMessage({ id: currentJob, type: 'progress', key, current, total });
-  },
+// One config object per model → the library caches each model's session and reuses it.
+//  'medium' = full-detail ISNet (fp16, ~88 MB): most accurate edges and backgrounds.
+//  'small'  = compressed ISNet (8-bit, ~44 MB): quicker, slightly rougher.
+const progress = (key, current, total) => {
+  const now = Date.now();
+  if (!currentJob || now - lastProgress < 150) return;
+  lastProgress = now;
+  self.postMessage({ id: currentJob, type: 'progress', key, current, total });
 };
+const CONFIGS = {};
+const configFor = (model) => (CONFIGS[model] ||= { model, output: { format: 'image/png', quality: 1 }, progress });
 
 function loadLib() {
   if (!libPromise) libPromise = import(LIB_URL).catch((e) => { libPromise = null; throw e; });
@@ -28,6 +28,7 @@ function loadLib() {
 
 self.onmessage = async (e) => {
   const { id, blob, warmup } = e.data;
+  const CONFIG = configFor(e.data.model === 'small' ? 'small' : 'medium');
   if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
     self.postMessage({ id, type: 'error', fallback: true, message: 'No OffscreenCanvas in worker' });
     return;
@@ -44,7 +45,7 @@ self.onmessage = async (e) => {
     }
     currentJob = id;
     const cut = await (lib.removeBackground || lib.default)(blob, CONFIG);
-    const out = await trimAndShrink(cut);
+    const out = await trimAndShrink(cut, blob);
     self.postMessage({ id, type: 'done', blob: out });
   } catch (err) {
     self.postMessage({ id, type: 'error', message: String((err && err.message) || err) });
@@ -60,7 +61,7 @@ async function tinyImage() {
 }
 
 // Crop transparent margins and downscale — all inside the worker.
-async function trimAndShrink(blob) {
+async function trimAndShrink(blob, originalBlob = null) {
   const bmp = await createImageBitmap(blob);
   const w = bmp.width, h = bmp.height;
   const c = new OffscreenCanvas(w, h);
@@ -68,8 +69,20 @@ async function trimAndShrink(blob) {
   ctx.drawImage(bmp, 0, 0);
   bmp.close && bmp.close();
   const img = ctx.getImageData(0, 0, w, h);
-  // Remove leftover background specks and make the garment solid again.
-  const res = cleanCutout(img.data, w, h);
+  // The original photo (same size) tells the cleanup what the background looked like.
+  let orig = null;
+  if (originalBlob) {
+    try {
+      const ob = await createImageBitmap(originalBlob);
+      const oc = new OffscreenCanvas(w, h);
+      const octx = oc.getContext('2d', { willReadFrequently: true });
+      octx.drawImage(ob, 0, 0, w, h);
+      ob.close && ob.close();
+      orig = octx.getImageData(0, 0, w, h).data;
+    } catch { orig = null; }
+  }
+  // Remove leftover background, make the garment solid, clean the edges.
+  const res = cleanCutout(img.data, w, h, orig);
   if (res.changed) ctx.putImageData(img, 0, 0);
   const data = img.data;
   const opaque = (x, y) => data[(y * w + x) * 4 + 3] > 12;

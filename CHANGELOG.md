@@ -1,5 +1,14 @@
 # Fitty changelog
 
+## v2.5
+- **Best-quality cut-outs by default:** the full-detail AI model (~88 MB) replaces the compressed one (~44 MB). It gives more accurate edges and handles tricky backgrounds better.
+- **Settings → Cut-out quality:** Best or Fast.
+- **Full resolution:** photos are kept at 1024 px, the AI's own working size, instead of 900 px.
+- **No more outlines:** edge pixels that mix garment and floor are unmixed (recolored to the garment, made partly transparent). That removes the thin light or dark line around clothes.
+- **True colors:** kept pixels take their color from the original photo, so areas the AI was unsure about no longer look smudged.
+- **Fixed:** the cleanup now learns background colors from the original photo. Before, it only worked on dark backgrounds, because the AI blanks the color of pixels it removes.
+- Switching to Best needs a one-time ~88 MB download (Settings → Download now, best on Wi-Fi). After that it works offline.
+
 ## v2.4
 - **Cleaner background removal on busy backgrounds** (speckled floors, patterned rugs, textured stone). After the AI runs, Fitty now:
   - learns the background colors and drops pixels the AI was unsure about that match them;
