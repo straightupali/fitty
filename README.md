@@ -18,6 +18,7 @@ Picks your outfit so you don't have to. Works on desktop and phones, installs li
 - **Color matching (v2):** colors come from photos or names, or you pick them, and each fit gets a Great match / Good match / Bold / Might clash verdict.
 - **Week planner (v2):** a 7-day plan from the forecast that follows the cooldown rules. Swap any day.
 - **Stats (v2):** most worn, collecting dust, category usage, color palette, and comfort.
+- **Languages (v2.6):** English and Arabic (العربية, right-to-left). Switch in Settings → Language.
 
 See `CHANGELOG.md` for version history.
 
@@ -54,12 +55,15 @@ Go to Settings → **Export backup** to get a `.json` file. On the other device,
 index.html            app shell
 styles.css            all styling
 js/app.js             UI: Today/Week, Fits, Ideas, Wardrobe, History/Stats, Settings, editors
+js/i18n.js            translations: t(), plurals, dates, right-to-left switch
+js/lang-ar.js         Arabic strings
 js/recommend.js       scoring + picking (pure functions)
 js/planner.js         week plan built on the recommender
 js/learn.js           "How did it feel?" learning
 js/colors.js          color detection, naming, harmony rules
 js/ideas.js           new-combo generator
 js/bg-worker.js       background removal worker
+js/cutout-clean.js    cleanup after the AI cut-out
 js/weather.js         Open-Meteo forecast + temperature → weight mapping
 js/db.js              IndexedDB storage + export/import
 js/images.js          resize, background removal, image cache

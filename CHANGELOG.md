@@ -1,5 +1,12 @@
 # Fitty changelog
 
+## v2.6
+- **Arabic (العربية):** switch in Settings → Language. The whole app is translated: screens, windows, toasts, weather, color names, What's new.
+- **Right-to-left layout:** in Arabic, menus, cards, sliders, the calendar and movable windows all flip to read right to left.
+- **Arabic fonts:** IBM Plex Sans Arabic for text and Noto Naskh Arabic for headings. Numbers stay as 0–9.
+- Dates use Iraqi month names (تشرين الثاني…). City search returns Arabic place names.
+- Your choice is remembered on this device. Fit and piece names you typed are not translated.
+
 ## v2.5
 - **Best-quality cut-outs by default:** the full-detail AI model (~88 MB) replaces the compressed one (~44 MB). It gives more accurate edges and handles tricky backgrounds better.
 - **Settings → Cut-out quality:** Best or Fast.

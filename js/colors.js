@@ -182,31 +182,33 @@ const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 36
 
 // items: [{ hex, category }]. Accessories count lightly (ignored for clash), shoes count.
 // Returns { score 0..1, label, reason } or null when fewer than two colors are known.
+// `reason` is { key, vars } so it can be translated: vars hold English color names (or lists of them).
 export function harmony(items) {
   const cols = items.filter(x => x && x.hex && x.category !== 'accessory').map(x => ({ ...colorInfo(x.hex), category: x.category }));
   if (cols.length < 2) return null;
   const accents = [];
   for (const c of cols) if (!c.neutral && !accents.some(a => hueDist(a.h, c.h) < 18)) accents.push(c);
-  const names = [...new Set(cols.map(c => c.name.toLowerCase()))];
-  const list = names.length > 1 ? names.slice(0, -1).join(', ') + ' + ' + names[names.length - 1] : names[0];
+  const names = [...new Set(cols.map(c => c.name))];
   let score, reason;
 
   if (accents.length === 0) {
     score = 0.86;
-    reason = names.length === 1 ? `All ${names[0]} — clean monochrome` : `${cap(list)} — easy neutrals`;
+    reason = names.length === 1 ? { key: 'All {a} — clean monochrome', vars: { a: names[0] } } : { key: '{list} — easy neutrals', vars: { list: names } };
   } else if (accents.length === 1) {
     score = 0.95;
-    reason = `${cap(accents[0].name)} pops against ${names.filter(n => n !== accents[0].name.toLowerCase()).join(' & ') || 'itself'}`;
+    const others = names.filter(n => n !== accents[0].name);
+    reason = others.length ? { key: '{a} pops against {others}', vars: { a: accents[0].name, others } } : { key: '{a} on its own', vars: { a: accents[0].name } };
   } else if (accents.length === 2) {
     const d = hueDist(accents[0].h, accents[1].h);
-    if (d <= 40) { score = 0.88; reason = `${cap(accents[0].name)} & ${accents[1].name.toLowerCase()} sit close on the color wheel`; }
-    else if (d >= 150) { score = 0.78; reason = `${cap(accents[0].name)} & ${accents[1].name.toLowerCase()} are opposites — bold but works`; }
-    else if (d >= 100) { score = 0.6; reason = `${cap(accents[0].name)} & ${accents[1].name.toLowerCase()} — a bold mix`; }
-    else { score = 0.42; reason = `${cap(accents[0].name)} & ${accents[1].name.toLowerCase()} may fight each other`; }
+    const vars = { a: accents[0].name, b: accents[1].name };
+    if (d <= 40) { score = 0.88; reason = { key: '{a} & {b} sit close on the color wheel', vars }; }
+    else if (d >= 150) { score = 0.78; reason = { key: '{a} & {b} are opposites — bold but works', vars }; }
+    else if (d >= 100) { score = 0.6; reason = { key: '{a} & {b} — a bold mix', vars }; }
+    else { score = 0.42; reason = { key: '{a} & {b} may fight each other', vars }; }
   } else {
     const maxD = Math.max(...accents.flatMap(a => accents.map(b => hueDist(a.h, b.h))));
-    if (maxD <= 50) { score = 0.8; reason = 'Several shades of one color family'; }
-    else { score = 0.4; reason = `${accents.length} strong colors — busy`; }
+    if (maxD <= 50) { score = 0.8; reason = { key: 'Several shades of one color family', vars: {} }; }
+    else { score = 0.4; reason = { key: '{n} strong colors — busy', vars: { n: accents.length } }; }
   }
 
   // Top vs bottom contrast: two different accent colors with the same lightness look muddy.

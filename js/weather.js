@@ -19,8 +19,8 @@ export function weightForTemp(feels, mapping = DEFAULT_MAPPING) {
   return 5;
 }
 
-export async function searchCity(q) {
-  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`;
+export async function searchCity(q, lang = 'en') {
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=${lang === 'ar' ? 'ar' : 'en'}&format=json`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('City search failed');
   const j = await res.json();

@@ -1,10 +1,10 @@
 // Fitty service worker — makes the app work offline.
 // Bump VERSION whenever you change app files so phones pick up the update.
-const VERSION = 'fitty-v2.5.0';
+const VERSION = 'fitty-v2.6.0';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/weather.js', './js/recommend.js', './js/images.js', './js/bg-worker.js',
-  './js/colors.js', './js/cutout-clean.js', './js/learn.js', './js/planner.js', './js/ideas.js',
+  './js/colors.js', './js/cutout-clean.js', './js/i18n.js', './js/lang-ar.js', './js/learn.js', './js/planner.js', './js/ideas.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png',
 ];
 const RUNTIME = 'fitbud-runtime'; // old name kept so the downloaded AI model stays cached
