@@ -1765,7 +1765,7 @@ function viewSettings() {
         <p>${t('Erase every fit, piece, group and history entry on this device.')}</p>
         <button class="btn danger" data-act="wipe">${icon('trash')} ${t('Erase all data')}</button>
       </div>
-      <p class="small muted" style="text-align:center">fitty · v${APP_VERSION} · ${t('weather by Open-Meteo')}</p>
+      <p class="small muted" style="text-align:center">fitty · v${APP_VERSION}</p>
     </div>`;
 }
 

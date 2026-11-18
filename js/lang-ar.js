@@ -426,7 +426,6 @@ export const AR = {
   'All fits, pieces, groups and history on this device will be deleted. Export a backup first if you might want them back.': 'ستُحذف كل الأطقم والقطع والمجموعات والسجل من هذا الجهاز. صدّر نسخة احتياطية أولاً إن كنت قد تحتاجها.',
   'Erase all': 'مسح الكل',
   'All data erased': 'تم مسح كل البيانات',
-  'weather by Open-Meteo': 'الطقس من Open-Meteo',
 
   // ---------- what's new (v2)
   "What's new in v2": 'الجديد في الإصدار 2',
