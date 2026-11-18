@@ -1,5 +1,5 @@
 // Fitty — main app (vanilla JS, no build step)
-import { db, uid, persistStorage, exportAll, importAll, migratePhotos } from './db.js';
+import { db, uid, persistStorage, exportAll, importAll, migratePhotos, mainAppCounts, copyFromMain, betaSummary, mergeFromBeta, deleteBeta } from './db.js';
 import { DEFAULT_LOCATION, DEFAULT_MAPPING, weightForTemp, searchCity, getForecast, describeCode } from './weather.js';
 import { scoreFits, pickWeighted, toISO, fromISO, daysBetween } from './recommend.js';
 import { shrink, removeBackground, imageURL, warmUpBackgroundRemoval, prepareOffline, offlineReady, looksLikeNetworkError, setCutoutModel } from './images.js';
@@ -8,6 +8,9 @@ import { computeLearning, effectiveWeight } from './learn.js';
 import { buildPlan, repickDay } from './planner.js';
 import { generateIdeas, comboKey } from './ideas.js';
 import { t, getLang, setLang, applyLang, isRTL, fmtDate } from './i18n.js';
+import { BETA, LS_PREFIX } from './config.js';
+import { drawFitCard } from './share.js';
+import { startSender, startReceiver, sendText, receiveText, qrSVG, startScanner, unpack } from './transfer.js';
 
 // ---------------------------------------------------------------- constants
 // Category names are looked up in the current language every time they're shown.
@@ -23,7 +26,7 @@ const CAT = Object.fromEntries(CATS.map(c => [c.id, c]));
 const GROUP_COLORS = ['#D9A79A', '#A9BFA8', '#A7B8CC', '#E2C38E', '#C7B2D6', '#9FC9C6', '#E5A9B8', '#B9AE9E'];
 const DEFAULT_SETTINGS = { location: DEFAULT_LOCATION, mapping: DEFAULT_MAPPING, blockDays: 2, fadeDays: 7, autoBg: true,
   learn: true, learnSince: 0, cutQuality: 'best' };
-const APP_VERSION = '2.6';
+const APP_VERSION = '3.0';
 const WEIGHT_WORDS = ['Very light', 'Light', 'Mild', 'Medium', 'Warm', 'Heaviest'];
 const weightWord = (i) => t(WEIGHT_WORDS[i]);
 
@@ -51,6 +54,9 @@ const ICONS = {
   down: '<path d="m6 9.5 6 6 6-6"/>',
   moon: '<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>',
   up: '<path d="m6 14.5 6-6 6 6"/>',
+  box: '<path d="M3.5 8 12 4l8.5 4v8.5L12 20.5l-8.5-4z"/><path d="M3.5 8 12 12l8.5-4M12 12v8.5"/>',
+  share: '<path d="M12 15V4M8 7.5 12 3.5l4 4"/><path d="M8 11H6.5A1.5 1.5 0 0 0 5 12.5v6A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-6a1.5 1.5 0 0 0-1.5-1.5H16"/>',
+  qr: '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2"/>',
 };
 const icon = (n) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -75,11 +81,18 @@ const S = {
   dismissedIdeas: new Set(),
   bgBusy: new Set(),
   installPrompt: null,
+  mainCounts: null,      // beta only: how much data the main app has
+  betaLeft: null,        // main app: changes made in the beta that aren't here yet
 };
 
 const pieceById = (id) => S.pieces.find(p => p.id === id);
 const fitById = (id) => S.fits.find(f => f.id === id);
 const groupById = (id) => S.groups.find(g => g.id === id);
+// Seasonal storage: stored pieces are put away, and any fit that needs one sits out until it's back.
+const isStored = (p) => !!(p && p.stored);
+const fitStored = (f) => f.pieceIds.some(id => isStored(pieceById(id)));
+const activeFits = () => S.fits.filter(f => !fitStored(f));
+const activePieces = () => S.pieces.filter(p => !p.stored);
 const todayISO = () => toISO(new Date());
 const tomorrowISO = () => { const d = new Date(); d.setDate(d.getDate() + 1); return toISO(d); };
 const targetDate = () => (S.mode === 'today' ? todayISO() : tomorrowISO());
@@ -90,11 +103,11 @@ async function saveSettings() { await db.setMeta('settings', S.settings); }
 // Daily state: skips + current picks reset every new day.
 function daily() {
   let d;
-  try { d = JSON.parse(localStorage.getItem('fitbud:daily') || 'null'); } catch { d = null; }
+  try { d = JSON.parse(localStorage.getItem(LS_PREFIX + 'daily') || 'null'); } catch { d = null; }
   if (!d || d.day !== todayISO()) d = { day: todayISO(), skips: {}, picks: {} };
   return d;
 }
-function saveDaily(d) { try { localStorage.setItem('fitbud:daily', JSON.stringify(d)); } catch { } }
+function saveDaily(d) { try { localStorage.setItem(LS_PREFIX + 'daily', JSON.stringify(d)); } catch { } }
 
 // ---------------------------------------------------------------- toasts
 function toast(msg, action, ms = 2400) {
@@ -439,8 +452,9 @@ function itemTile(p, { remove = false, selectable = false, selected = false, act
     <div class="img">${url ? `<img data-piece="${p.id}" src="${url}" alt="${esc(p.name)}" loading="lazy">` : esc(p.name)}</div>
     <div class="label"><b>${esc(p.name)}</b><span>${p.color ? `<i class="cdot" style="background:${p.color}" title="${esc(colorName(p.color))}"></i>` : ''}${esc(sub ?? CAT[p.category].one)}</span></div>
     <span class="busy ${S.bgBusy.has(p.id) ? '' : 'hidden'}" data-busy="${p.id}">✂︎ ${t('cutting out…')}</span>
-    ${p.bgPending && !S.bgBusy.has(p.id) ? `<span class="pending">⏳ ${t('cut-out when online')}</span>` : ''}
+    ${p.bgPending && !p.stored && !S.bgBusy.has(p.id) ? `<span class="pending">⏳ ${t('cut-out when online')}</span>` : ''}
     ${p.imageLost && !p.image ? `<span class="pending">📷 ${t('add photo again')}</span>` : ''}
+    ${p.stored && !selectable ? `<span class="pending stored-tag">📦 ${t('In storage')}</span>` : ''}
     ${remove ? `<button class="x" data-act="remove" data-id="${p.id}" aria-label="${esc(t('Remove {name}', { name: p.name }))}">${icon('x')}</button>` : ''}
     ${selectable ? `<span class="check">${icon('check')}</span>` : ''}
   </${tag}>`;
@@ -650,7 +664,7 @@ function currentPick(date, tw) {
   const d = daily();
   const skips = new Set(d.skips[date] || []);
   const scored = scoreFits({
-    fits: S.fits, pieces: S.pieces, wears: S.wears.concat(planWears(date)), targetDate: date, targetWeight: tw,
+    fits: activeFits(), pieces: S.pieces, wears: S.wears.concat(planWears(date)), targetDate: date, targetWeight: tw,
     groupId: S.group, blockDays: S.settings.blockDays, fadeDays: S.settings.fadeDays, skipped: skips, weightOf: weightOfFit,
   });
   const ok = (s) => s && !s.blocked && !s.skipped;
@@ -669,6 +683,40 @@ function currentPick(date, tw) {
   }
   const eligible = scored.filter(ok).length;
   return { pick, scored, skips, eligible, fromPlan };
+}
+
+// Beta: offer to copy the main app's data so you can test with your real wardrobe.
+function betaCard() {
+  const b = S.betaLeft;
+  if (!BETA && b && b.total) {
+    const bits = [
+      b.newWears && t('{n} logged days', { n: b.newWears }),
+      b.newFits && t('{n} new fits', { n: b.newFits }),
+      b.newPieces && t('{n} new pieces', { n: b.newPieces }),
+      (b.changedPieces + b.changedFits) && t('{n} edits (like stored pieces)', { n: b.changedPieces + b.changedFits }),
+    ].filter(Boolean);
+    return `<div class="card beta-card fade-in"><span class="sh-e">🧪</span>
+      <div><b>${t('Bring over what you did in the beta?')}</b>
+      <p class="small muted" style="margin:4px 0 0">${bits.length ? esc(bits.join(' · ')) + '. ' : ''}${t('Newer versions win; nothing here gets deleted.')}</p></div>
+      <div class="row"><button class="btn sm" data-act="beta-discard">${t('Discard')}</button><button class="btn primary sm" data-act="beta-merge">${t('Bring it over')}</button></div></div>`;
+  }
+  const m = S.mainCounts;
+  if (!BETA || !m || (!m.pieces && !m.fits) || S.pieces.length || S.fits.length) return '';
+  return `<div class="card beta-card fade-in"><span class="sh-e">🧪</span>
+    <div><b>${t('This is the Fitty beta')}</b>
+    <p class="small muted" style="margin:4px 0 0">${t('Copy your {f} fits and {p} pieces from the main app to try the new features with them. The main app isn\'t changed.', { f: m.fits, p: m.pieces })}</p></div>
+    <button class="btn primary sm" data-act="beta-copy">${t('Copy my data')}</button></div>`;
+}
+async function betaCopy(confirmFirst) {
+  if (confirmFirst && !(await ask({ title: t('Copy from the main app?'), text: t('Everything in the beta is replaced with a fresh copy of your main Fitty data. The main app isn\'t changed.'), ok: t('Copy') }))) return;
+  const busyToast = toast(t('Copying…'), null, 60000);
+  try {
+    const r = await copyFromMain();
+    localStorage.removeItem(LS_PREFIX + 'daily');
+    await reloadData(); busyToast.remove(); render();
+    toast(t('Copied {f} fits and {p} pieces', { f: r.fits, p: r.pieces }));
+    maybeShowWhatsNew();
+  } catch (e) { console.warn(e); busyToast.remove(); toast(t('Couldn\'t find the main app\'s data on this device')); }
 }
 
 // The most recent worn day (last 4 days) you haven't rated yet.
@@ -719,7 +767,7 @@ function viewToday() {
         <button class="${S.mode === 'week' ? 'active' : ''}" data-act="mode" data-m="week">${t('Week')}</button>
       </div>`;
   const fb = pendingFeedback();
-  const fbHTML = fb && S.fits.length ? feedbackCard(fb) : '';
+  const fbHTML = betaCard() + (fb && S.fits.length ? feedbackCard(fb) : '');
   if (S.mode === 'week') {
     return `<div class="view-head"><div><h1>${t('What to wear')}</h1></div>${seg}</div>${fbHTML}${viewWeek()}`;
   }
@@ -771,7 +819,7 @@ function viewToday() {
       <div class="flatlay big">${ps.map(p => itemTile(p)).join('')}</div>
       <div class="rec-actions">
         <button class="btn" data-act="undo-wear" data-id="${wear.id}">${icon('undo')} ${t('Undo')}</button>
-        ${fit ? `<button class="btn" data-act="edit-fit" data-id="${fit.id}">${icon('edit')} ${t('Edit fit')}</button>` : '<span></span>'}
+        ${fit ? `<button class="btn" data-act="share-fit" data-id="${fit.id}">${icon('share')} ${t('Share')}</button>` : '<span></span>'}
       </div></div>`;
   } else {
     const { pick, scored, skips, eligible, fromPlan } = currentPick(date, tw);
@@ -802,7 +850,7 @@ function viewToday() {
           <div class="small muted">${t('Fitty suggests')}</div>
           <h2 style="margin-top:2px">${esc(f.name)}</h2>
           <div class="small" style="margin-top:6px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">${groupTag(f.groupId)} ${weightDots(f.weight)} ${colorDots(f.pieceIds)}</div>
-        </div><button class="btn icon ghost" data-act="edit-fit" data-id="${f.id}" aria-label="${t('Edit fit')}">${icon('edit')}</button></div>
+        </div><div class="head-btns"><button class="btn icon ghost" data-act="share-fit" data-id="${f.id}" aria-label="${t('Share fit')}">${icon('share')}</button><button class="btn icon ghost" data-act="edit-fit" data-id="${f.id}" aria-label="${t('Edit fit')}">${icon('edit')}</button></div></div>
         <div class="flatlay big">${ps.map(p => itemTile(p)).join('')}</div>
         <div class="reasons">${reasons.map(r => `<span class="reason">${esc(r)}</span>`).join('')}</div>
         <div class="rec-actions">
@@ -814,12 +862,25 @@ function viewToday() {
     }
   }
 
+  // Season turning? Fits with stored pieces that suit the weather, while few active fits do.
+  let storeHint = '';
+  if (tw != null && !wear) {
+    const near = (f, d) => Math.abs(weightOfFit(f) - tw) <= d;
+    const waiting = S.fits.filter(f => fitStored(f) && near(f, 1));
+    if (waiting.length && activeFits().filter(f => near(f, 1)).length < 2) {
+      storeHint = `<div class="card store-hint fade-in"><span class="sh-e">📦</span>
+        <div><b>${t('{n} fits in storage suit this weather', { n: waiting.length })}</b>
+        <div class="small muted">${esc(waiting.slice(0, 3).map(f => f.name).join(isRTL() ? '، ' : ', '))}</div></div>
+        <button class="btn sm" data-act="open-storage">${t('Bring back')}</button></div>`;
+    }
+  }
+
   return `
     <div class="view-head"><div><h1>${t('What to wear')}</h1></div>${seg}</div>
     ${fbHTML}
     <div class="today-grid">
       <div><div class="card weather">${weatherHTML}${targetHTML}</div>${groupChips('mt')}</div>
-      <div>${recHTML}</div>
+      <div>${recHTML}${storeHint}</div>
     </div>`;
 }
 
@@ -863,7 +924,7 @@ function viewWeek() {
 function makePlan() {
   const dates = weekDates();
   S.plan = buildPlan({
-    dates, fits: S.fits, pieces: S.pieces, wears: S.wears, targetWeightFor: (d) => targetWeight(d),
+    dates, fits: activeFits(), pieces: S.pieces, wears: S.wears, targetWeightFor: (d) => targetWeight(d),
     groupId: S.group, blockDays: S.settings.blockDays, fadeDays: S.settings.fadeDays, weightOf: weightOfFit,
   });
   savePlan();
@@ -884,6 +945,18 @@ function afterToday(view) {
       }
       case 'retry-weather': loadWeather(true); render(); break;
       case 'new-fit': openFitEditor(null); break;
+      case 'open-storage': openStorage(); break;
+      case 'beta-copy': betaCopy(false); break;
+      case 'beta-merge': {
+        const r = await mergeFromBeta(); await deleteBeta(); S.betaLeft = null;
+        await reloadData(); render(); toast(t('Brought over {n} changes from the beta', { n: r.total }));
+        break;
+      }
+      case 'beta-discard':
+        if (!(await ask({ title: t('Discard the beta data?'), text: t('What you did in the beta is deleted. Your data here stays as it is.'), ok: t('Discard'), danger: true }))) break;
+        await deleteBeta(); S.betaLeft = null; render(); toast(t('Beta data removed'));
+        break;
+      case 'share-fit': openShare(fitById(a.dataset.id)); break;
       case 'edit-fit': openFitEditor(fitById(a.dataset.id)); break;
       case 'skip': {
         const d = daily();
@@ -900,7 +973,7 @@ function afterToday(view) {
       case 'wk-swap': {
         const d = a.dataset.d;
         const id = repickDay({
-          date: d, plan: S.plan, fits: S.fits, pieces: S.pieces, wears: S.wears, targetWeight: targetWeight(d),
+          date: d, plan: S.plan, fits: activeFits(), pieces: S.pieces, wears: S.wears, targetWeight: targetWeight(d),
           groupId: S.group, blockDays: S.settings.blockDays, fadeDays: S.settings.fadeDays, weightOf: weightOfFit,
         });
         if (id && id !== S.plan[d]) { S.plan[d] = id; savePlan(); render(); }
@@ -964,7 +1037,7 @@ function viewFits() {
   let fits = [...S.fits];
   if (gid === 'none') fits = fits.filter(f => !f.groupId || !groupById(f.groupId));
   else if (gid !== 'all') fits = fits.filter(f => f.groupId === gid);
-  fits.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  fits.sort((a, b) => (fitStored(a) - fitStored(b)) || (b.createdAt || 0) - (a.createdAt || 0));
   const lastMap = new Map();
   for (const w of S.wears) if (!lastMap.has(w.fitId) || lastMap.get(w.fitId) < w.date) lastMap.set(w.fitId, w.date);
   const hasUngrouped = S.fits.some(f => !f.groupId || !groupById(f.groupId));
@@ -972,8 +1045,9 @@ function viewFits() {
   const cards = fits.map(f => {
     const last = lastMap.get(f.id);
     const lastTxt = last ? (last > todayISO() ? t('Planned tomorrow') : t('Worn {when}', { when: daysAgo(daysBetween(last, todayISO())) })) : t('Not worn yet');
-    return `<button class="fitcard" data-act="edit" data-id="${f.id}">
-      ${collage(f.pieceIds)}
+    const st = fitStored(f);
+    return `<button class="fitcard ${st ? 'stored' : ''}" data-act="edit" data-id="${f.id}">
+      ${collage(f.pieceIds)}${st ? `<span class="stored-badge">📦 ${t('In storage')}</span>` : ''}
       <div class="body"><div class="name">${esc(f.name)}</div>
         <div class="sub"><span>${groupTag(f.groupId) || t('{n} pieces', { n: f.pieceIds.length })}</span>${weightDots(f.weight)}</div>
         <div class="sub"><span>${esc(lastTxt)}</span>${colorDots(f.pieceIds, 4)}</div></div>
@@ -1033,12 +1107,12 @@ async function openIdeas() {
   if (openEditor && !openEditor.closed) { toast(t("Save or close the fit you're editing first")); return; }
   const tw = targetWeight(tomorrowISO());
   let ideas = [];
-  const gen = () => { ideas = generateIdeas({ pieces: S.pieces, fits: S.fits, wears: S.wears, targetWeight: tw, dismissed: S.dismissedIdeas }); };
+  const gen = () => { ideas = generateIdeas({ pieces: activePieces(), fits: S.fits, wears: S.wears, targetWeight: tw, dismissed: S.dismissedIdeas }); };
   gen();
   const h = openSheet({
     title: t('Combo ideas'),
     body: () => {
-      const tops = S.pieces.filter(p => p.category === 'top').length, bottoms = S.pieces.filter(p => p.category === 'bottom').length;
+      const tops = activePieces().filter(p => p.category === 'top').length, bottoms = activePieces().filter(p => p.category === 'bottom').length;
       if (!tops || !bottoms) return `<div class="empty" style="padding:24px 8px"><div class="art">✨</div><h3>${t('Need a few more pieces')}</h3><p>${t('Add at least one top and one bottom to your wardrobe and Fitty will start mixing them.')}</p></div>`;
       if (!ideas.length) return `<div class="empty" style="padding:24px 8px"><div class="art">🧩</div><h3>${t("You've tried every mix")}</h3><p>${t('Every top + bottom pair is already a fit (or you passed on it). Add new pieces for fresh ideas.')}</p>
         ${S.dismissedIdeas.size ? `<button class="btn" data-act="reset-dismissed">${t('Show ideas I passed on')}</button>` : ''}</div>`;
@@ -1149,7 +1223,7 @@ function openFitEditor(fit, preset = {}) {
         ${colorStrip(draft.pieceIds)}
         ${slots}`;
     },
-    foot: () => `${isNew ? '' : `<button class="btn danger" data-act="delete">${icon('trash')}</button>`}
+    foot: () => `${isNew ? '' : `<button class="btn danger" data-act="delete" aria-label="${t('Delete')}">${icon('trash')}</button><button class="btn" data-act="share" aria-label="${t('Share fit')}">${icon('share')}</button>`}
       <button class="btn grow" data-close>${t('Cancel')}</button>
       <button class="btn grow primary" data-act="save">${preset.logDate ? `${icon('check')} ${preset.logDate === todayISO() ? t('Save & wear today') : preset.logDate === tomorrowISO() ? t('Save & wear tomorrow') : t('Save & wear that day')}` : t('Save fit')}</button>`,
     onInput: (e) => {
@@ -1189,6 +1263,9 @@ function openFitEditor(fit, preset = {}) {
         h.close();
         if (preset.logDate) await acceptFit(draft, preset.logDate, t('Saved to your fits · wearing it {day}', { day: dayWord(preset.logDate) }));
         else { render(); toast(isNew ? t('Fit saved') : t('Fit updated')); }
+      } else if (act === 'share') {
+        if (!draft.pieceIds.length) { toast(t('Add at least one piece first')); return; }
+        openShare({ ...draft, name: draft.name.trim() || t('Fit #{n}', { n: S.fits.length + (isNew ? 1 : 0) }) });
       } else if (act === 'delete') {
         if (!(await ask({ title: t('Delete this fit?'), text: t('Its pieces stay in your wardrobe and past history is kept.'), ok: t('Delete'), danger: true }))) return;
         await db.del('fits', draft.id);
@@ -1228,9 +1305,10 @@ function openPicker(cat, draft, onChange) {
     title: t('Add {items}', { items: CAT[cat].label.toLowerCase() }),
     autofocus: '[data-k=newname]',
     body: () => {
-      const lib = S.pieces.filter(p => p.category === cat && (!q || p.name.toLowerCase().includes(q.toLowerCase())))
+      const lib = activePieces().filter(p => p.category === cat && (!q || p.name.toLowerCase().includes(q.toLowerCase())))
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      const total = S.pieces.filter(p => p.category === cat).length;
+      const total = activePieces().filter(p => p.category === cat).length;
+      const inStorage = S.pieces.filter(p => p.category === cat && p.stored).length;
       return `
         <div class="row" style="margin-bottom:12px">
           <input class="input" data-k="newname" placeholder="${esc(t('Add by name, e.g. {example}', { example: t(cat === 'bottom' ? 'Black jeans' : cat === 'shoes' ? 'White sneakers' : cat === 'accessory' ? 'Silver watch' : cat === 'outerwear' ? 'Denim jacket' : 'White tee') }))}" maxlength="40">
@@ -1248,7 +1326,8 @@ function openPicker(cat, draft, onChange) {
         <div class="section-title">${t('From your wardrobe')}${total ? ` · ${total}` : ''}</div>
         ${total > 8 ? `<input class="input" data-k="q" placeholder="${esc(t('Search {items}', { items: CAT[cat].label.toLowerCase() }))}" value="${esc(q)}" style="margin-bottom:10px">` : ''}
         ${lib.length ? `<div class="flatlay">${lib.map(p => itemTile(p, { act: 'toggle', selectable: true, selected: draft.pieceIds.includes(p.id) })).join('')}</div>`
-          : `<p class="muted small">${total ? t('No matches.') : t('No {items} yet — add one above.', { items: CAT[cat].label.toLowerCase() })}</p>`}`;
+          : `<p class="muted small">${total ? t('No matches.') : t('No {items} yet — add one above.', { items: CAT[cat].label.toLowerCase() })}</p>`}
+        ${inStorage ? `<p class="small muted" style="margin-top:12px">📦 ${t('{n} more in storage', { n: inStorage })}</p>` : ''}`;
     },
     foot: () => `<button class="btn grow primary" data-close>${t('Done')}</button>`,
     onRender: (hh) => {
@@ -1296,16 +1375,21 @@ function openPicker(cat, draft, onChange) {
 
 // ================================================================= WARDROBE
 function viewWardrobe() {
-  const counts = Object.fromEntries(CATS.map(c => [c.id, S.pieces.filter(p => p.category === c.id).length]));
-  const list = S.pieces.filter(p => S.wardCat === 'all' || p.category === S.wardCat)
+  const act = activePieces();
+  const storedN = S.pieces.length - act.length;
+  if (S.wardCat === 'stored' && !storedN) S.wardCat = 'all';
+  const counts = Object.fromEntries(CATS.map(c => [c.id, act.filter(p => p.category === c.id).length]));
+  const list = (S.wardCat === 'stored' ? S.pieces.filter(p => p.stored) : act.filter(p => S.wardCat === 'all' || p.category === S.wardCat))
     .sort((a, b) => CAT[a.category].i - CAT[b.category].i || (b.createdAt || 0) - (a.createdAt || 0));
   const usage = (id) => S.fits.filter(f => f.pieceIds.includes(id)).length;
   return `
-    <div class="view-head"><div><h1>${t('Wardrobe')}</h1><p class="muted">${t('{n} pieces', { n: S.pieces.length })}${isDesktop() ? ' · ' + t('drop or paste photos anywhere here') : ''}</p></div>
-      <button class="btn primary" data-act="add">${icon('plus')} ${t('Add piece')}</button></div>
+    <div class="view-head"><div><h1>${t('Wardrobe')}</h1><p class="muted">${t('{n} pieces', { n: act.length })}${storedN ? ' · ' + t('{n} in storage', { n: storedN }) : ''}${isDesktop() ? ' · ' + t('drop or paste photos anywhere here') : ''}</p></div>
+      <div class="fab-row">${S.pieces.length ? `<button class="btn" data-act="storage">${icon('box')} ${t('Storage')}</button>` : ''}
+      <button class="btn primary" data-act="add">${icon('plus')} ${t('Add piece')}</button></div></div>
     <div class="chips" style="margin-bottom:16px">
       <button class="chip ${S.wardCat === 'all' ? 'active' : ''}" data-act="cat" data-c="all">${t('All')}</button>
       ${CATS.map(c => `<button class="chip ${S.wardCat === c.id ? 'active' : ''}" data-act="cat" data-c="${c.id}">${c.label}${counts[c.id] ? ` · ${counts[c.id]}` : ''}</button>`).join('')}
+      ${storedN ? `<button class="chip ${S.wardCat === 'stored' ? 'active' : ''}" data-act="cat" data-c="stored">📦 ${t('In storage')} · ${storedN}</button>` : ''}
     </div>
     ${list.length ? `<div class="flatlay">${list.map(p => {
       const u = usage(p.id);
@@ -1319,7 +1403,8 @@ function afterWardrobe(view) {
     const a = e.target.closest('[data-act]');
     if (!a) return;
     if (a.dataset.act === 'cat') { S.wardCat = a.dataset.c; render(); }
-    if (a.dataset.act === 'add') openPieceSheet(null, { category: S.wardCat === 'all' ? 'top' : S.wardCat });
+    if (a.dataset.act === 'add') openPieceSheet(null, { category: CAT[S.wardCat] ? S.wardCat : 'top' });
+    if (a.dataset.act === 'storage') openStorage();
     if (a.dataset.act === 'edit') openPieceSheet(pieceById(a.dataset.id));
   };
 }
@@ -1389,7 +1474,13 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
           </span>
           <div class="palette">${PALETTE.map(c => `<button class="psw ${d.color && colorInfo(d.color).family === c.id ? 'on' : ''}" style="background:${c.hex}" data-act="color" data-hex="${c.hex}" title="${esc(t(c.name))}" aria-label="${esc(t(c.name))}"></button>`).join('')}</div>
         </div>
+        ${isNew ? '' : `<div class="field toggle storage-row"><div><b>📦 ${t('In storage')}</b><div class="small muted">${t('Put away for the season — Fitty won\'t suggest fits that need it.')}</div></div>
+          <label class="switch"><input type="checkbox" data-k="stored" ${d.stored ? 'checked' : ''}><span></span></label></div>`}
         ${using.length ? `<div class="section-title">${t('Used in')}</div><div class="chips">${using.map(f => `<span class="chip">${esc(f.name)}</span>`).join('')}</div>` : ''}`;
+    },
+    onChange: (e) => {
+      if (e.target.dataset.k !== 'stored') return;
+      if (e.target.checked) { d.stored = true; d.storedAt = Date.now(); } else { delete d.stored; delete d.storedAt; }
     },
     foot: () => `${isNew ? '' : `<button class="btn danger" data-act="delete">${icon('trash')}</button>`}
       <button class="btn grow" data-close>${t('Cancel')}</button><button class="btn grow primary" data-act="save">${t('Save')}</button>`,
@@ -1472,6 +1563,240 @@ function openPieceSheet(piece, { category = 'top', file = null } = {}) {
   if (file) setImage(file);
 }
 
+// ---------------------------------------------------------------- Share a fit as an image
+function openShare(fit) {
+  if (!fit) return;
+  let size = 'post', file = null, url = null, busy = false, token = 0;
+  const canShareFiles = () => !!(file && navigator.canShare && navigator.canShare({ files: [file] }));
+  const make = async () => {
+    const my = ++token;
+    busy = true; h.rerender();
+    const ps = sortPieces(fit.pieceIds);
+    const h0 = fitHarmony(fit.pieceIds);
+    const g = groupById(fit.groupId);
+    const blob = await drawFitCard({
+      size,
+      pieces: ps.map(p => ({ name: p.name, url: imageURL(p), cutout: !!p.original, color: p.color })),
+      meta: {
+        name: fit.name, rtl: isRTL(),
+        sub: [g ? g.name : '', h0 ? t(h0.label) : ''].filter(Boolean).join(' · '),
+        brandNote: `${t('Weight')} ${fit.weight} · ${weightWord(fit.weight)}`,
+        colors: [...new Set(ps.map(p => p.color).filter(Boolean))],
+        footer: t('made with fitty'),
+      },
+    });
+    if (my !== token || h.closed) return;
+    const safe = fit.name.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '') || 'fit';
+    file = new File([blob], `fitty-${safe}.png`, { type: 'image/png' });
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(blob);
+    busy = false; h.rerender();
+  };
+  const h = openSheet({
+    cls: 'narrow share-sheet', title: t('Share fit'),
+    body: () => `
+      <div class="seg share-seg"><button class="${size === 'post' ? 'active' : ''}" data-act="size" data-s="post">${t('Post')}</button><button class="${size === 'story' ? 'active' : ''}" data-act="size" data-s="story">${t('Story')}</button></div>
+      <div class="share-preview ${size}">${url && !busy ? `<img src="${url}" alt="${esc(fit.name)}">` : `<div class="small muted">${t('Making the card…')}</div>`}</div>`,
+    foot: () => `<button class="btn grow" data-act="save-img" ${file && !busy ? '' : 'disabled'}>${icon('download')} ${t('Save image')}</button>
+      ${navigator.canShare ? `<button class="btn grow primary" data-act="share" ${file && !busy ? '' : 'disabled'}>${icon('share')} ${t('Share')}</button>` : ''}`,
+    onAct: async (act, el) => {
+      if (act === 'size') { if (size !== el.dataset.s) { size = el.dataset.s; make(); } }
+      else if (act === 'share' && file) {
+        if (canShareFiles()) {
+          try { await navigator.share({ files: [file], title: fit.name }); } catch (err) { if (err.name !== 'AbortError') toast(t('Could not share — try Save image')); }
+        } else toast(t('Sharing images isn\'t supported here — use Save image'));
+      } else if (act === 'save-img' && file) {
+        const a = document.createElement('a');
+        a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+        toast(t('Image saved'));
+      }
+    },
+    onClose: () => { token++; if (url) setTimeout(() => URL.revokeObjectURL(url), 1000); },
+  });
+  make();
+}
+
+// ---------------------------------------------------------------- Send to another device (QR)
+// Sender shows code 1 → receiver scans it and shows code 2 → sender scans that → data flows directly.
+function openTransfer(role) {
+  const X = { role, step: role === 'send' ? 'prep' : 'scan', code: '', qr: '', err: '', progress: 0, stats: null, settings: false, paste: false, camErr: false };
+  let conn = null, stopCam = null;
+  const camOff = () => { if (stopCam) { stopCam(); stopCam = null; } };
+  const fail = (e) => {
+    console.warn(e);
+    camOff();
+    const m = String(e && e.message || e);
+    X.err = m === 'not-fitty' ? t('That isn\'t a Fitty code.')
+      : m === 'need-offer' ? t('That\'s the reply code — scan the code from the sending device.')
+        : m === 'need-answer' ? t('That\'s the first code — scan the reply on the receiving device.')
+          : /connect|closed/.test(m) ? t('Couldn\'t connect. Make sure both devices are on the same Wi-Fi (or one uses the other\'s hotspot), then try again.')
+            : t('Something went wrong: {msg}', { msg: m });
+    X.step = 'error'; h.rerender();
+  };
+  const go = (step) => { X.step = step; X.err = ''; h.rerender(); };
+  const showCode = async (code) => { X.code = code; X.qr = await qrSVG(code); };
+
+  const handleScanned = async (code) => {
+    camOff();
+    try {
+      if (role === 'send') {
+        unpack(code, 'a');
+        go('sending');
+        await conn.accept(code);
+        const text = JSON.stringify(await exportAll());
+        const res = await sendText(conn.dc, conn.pc, text, { pieces: S.pieces.length, fits: S.fits.length, settings: X.settings },
+          (f) => { X.progress = f; const b = $('[data-prog]', h.el); if (b) b.style.width = Math.round(f * 100) + '%'; });
+        X.stats = res; go('done');
+      } else {
+        unpack(code, 'o');
+        go('making');
+        conn = await startReceiver(code);
+        await showCode(conn.code);
+        go('answer');
+        const dc = await conn.channel;
+        await receiveText(dc, conn.pc, {
+          onStart: () => go('receiving'),
+          onProgress: (f) => { X.progress = f; const b = $('[data-prog]', h.el); if (b) b.style.width = Math.round(f * 100) + '%'; },
+          handle: async (text, header) => {
+            const st = await importAll(JSON.parse(text), { includeSettings: !!(header && header.settings) });
+            await reloadData();
+            return st;
+          },
+        }).then(st => { X.stats = st; go('done'); render(); });
+      }
+    } catch (e) { fail(e); }
+  };
+  window.__fittyScan = handleScanned; // lets automated tests skip the camera
+
+  const startCam = async (hh = h) => {
+    X.camErr = false;
+    const v = $('video[data-cam]', hh.el);
+    if (!v) return;
+    try {
+      stopCam = await startScanner(v, handleScanned, (txt) => txt.startsWith('FITTY1|'));
+    } catch (e) { console.warn(e); X.camErr = true; X.paste = true; hh.rerender(); }
+  };
+
+  const cam = (hint) => `<p class="small muted xfer-hint">${hint}</p>
+    ${X.paste ? '' : `<div class="cam"><video data-cam muted playsinline></video><div class="cam-frame"></div></div>`}
+    ${X.camErr ? `<p class="small" style="color:var(--danger)">${t('The camera isn\'t available — paste the code instead.')}</p>` : ''}
+    ${X.paste ? `<textarea class="input" data-k="paste" rows="4" placeholder="${esc(t('Paste the code here'))}" style="font-family:monospace;font-size:12px"></textarea>
+      <button class="btn primary" data-act="use-paste" style="margin-top:8px">${t('Continue')}</button>`
+      : `<button class="linkbtn" data-act="paste-mode" style="margin-top:10px">${t('No camera? Paste the code instead')}</button>`}`;
+  const qrBlock = (hint) => `<p class="small muted xfer-hint">${hint}</p>
+    <div class="qr-box">${X.qr}</div>
+    <button class="linkbtn" data-act="copy-code" style="margin-top:8px">${t('Copy as text instead')}</button>`;
+  const steps = (n) => `<div class="xfer-steps">${[1, 2, 3].map(i => `<span class="${i <= n ? 'on' : ''}"></span>`).join('')}</div>`;
+  const bar = () => `<div class="prog"><div data-prog style="width:${Math.round(X.progress * 100)}%"></div></div>`;
+
+  const h = openSheet({
+    cls: 'narrow xfer', title: role === 'send' ? t('Send to another device') : t('Receive from another device'),
+    body: () => {
+      const st = X.step;
+      if (st === 'error') return `<div class="xfer-msg"><div class="art">⚠️</div><p>${esc(X.err)}</p></div>`;
+      if (st === 'prep') return `${steps(0)}<p>${t('Copies everything — pieces with photos, fits, groups and history — straight to your other device. Nothing goes through the internet.')}</p>
+        <ul class="small muted xfer-list"><li>${t('Both devices need to be on the same Wi-Fi (or one on the other\'s hotspot).')}</li><li>${t('On the other device, open Fitty → Settings → Receive.')}</li><li>${t('Matching items are merged; the newer version wins.')}</li></ul>
+        <label class="toggle small" style="justify-content:flex-start;gap:10px;margin-top:6px"><input type="checkbox" data-k="x-settings" ${X.settings ? 'checked' : ''}> ${t('Also send settings (location, weather mapping, cooldown)')}</label>`;
+      if (st === 'making') return `<div class="xfer-msg"><div class="spin"></div><p class="muted">${t('Getting ready…')}</p></div>`;
+      if (st === 'offer') return `${steps(1)}${qrBlock(t('On the other device: Settings → Receive, then scan this code.'))}`;
+      if (st === 'scan' && role === 'send') return `${steps(2)}${cam(t('Now scan the code that appeared on the other device.'))}`;
+      if (st === 'scan') return `${steps(1)}${cam(t('Scan the code on the sending device (Settings → Send to another device).'))}`;
+      if (st === 'answer') return `${steps(2)}${qrBlock(t('Now scan this with the sending device. The transfer starts on its own.'))}<p class="small muted" style="text-align:center">${t('Waiting for the other device…')}</p>`;
+      if (st === 'sending' || st === 'receiving') return `${steps(3)}<div class="xfer-msg"><p><b>${st === 'sending' ? t('Sending…') : t('Receiving…')}</b></p>${bar()}<p class="small muted">${t('Keep both screens on.')}</p></div>`;
+      if (st === 'done') {
+        const s2 = X.stats || {};
+        return `<div class="xfer-msg"><div class="art">✅</div><h3>${role === 'send' ? t('Sent!') : t('All received')}</h3>
+          <p class="muted">${t('{a} new · {u} updated · {k} already up to date', { a: s2.added || 0, u: s2.updated || 0, k: s2.kept || 0 })}</p></div>`;
+      }
+      return '';
+    },
+    foot: () => {
+      const st = X.step;
+      if (st === 'prep') return `<button class="btn grow" data-close>${t('Cancel')}</button><button class="btn grow primary" data-act="x-start">${icon('qr')} ${t('Show code')}</button>`;
+      if (st === 'offer') return `<button class="btn grow primary" data-act="x-next">${icon('camera')} ${t('Next: scan the reply')}</button>`;
+      if (st === 'error') return `<button class="btn grow" data-close>${t('Close')}</button><button class="btn grow primary" data-act="x-retry">${t('Try again')}</button>`;
+      if (st === 'done') return `<button class="btn grow primary" data-close>${t('Done')}</button>`;
+      return '';
+    },
+    onRender: (hh) => { if (X.step === 'scan' && !X.paste && !stopCam) setTimeout(() => startCam(hh)); },
+    onChange: (e) => { if (e.target.dataset.k === 'x-settings') X.settings = e.target.checked; },
+    onAct: async (act) => {
+      if (act === 'x-start') {
+        go('making');
+        try { conn = await startSender(); await showCode(conn.code); go('offer'); } catch (e) { fail(e); }
+      } else if (act === 'x-next') { go('scan'); }
+      else if (act === 'paste-mode') { camOff(); X.paste = true; h.rerender(); }
+      else if (act === 'use-paste') {
+        const v = ($('[data-k=paste]', h.el).value || '').trim();
+        if (v) handleScanned(v);
+      } else if (act === 'copy-code') {
+        try { await navigator.clipboard.writeText(X.code); toast(t('Code copied')); }
+        catch {
+          openSheet({ cls: 'narrow', title: t('Copy this code'),
+            body: () => `<textarea class="input" readonly rows="5" style="font-family:monospace;font-size:12px">${esc(X.code)}</textarea>`,
+            foot: () => `<button class="btn grow primary" data-close>${t('Done')}</button>`,
+            onRender: (hh) => { const ta = $('textarea', hh.el); ta.focus(); ta.select(); } });
+        }
+      } else if (act === 'x-retry') {
+        camOff(); if (conn) conn.close(); conn = null;
+        Object.assign(X, { step: role === 'send' ? 'prep' : 'scan', code: '', qr: '', err: '', progress: 0, paste: false, camErr: false });
+        h.rerender();
+      }
+    },
+    onClose: () => { camOff(); if (conn && X.step !== 'done') conn.close(); if (window.__fittyScan === handleScanned) delete window.__fittyScan; },
+  });
+}
+
+// ---------------------------------------------------------------- Seasonal storage
+// A piece is "summer" if every fit using it is light (weight ≤ 1), "winter" if every fit is warm (≥ 4).
+function pieceSeason(p) {
+  const ws = S.fits.filter(f => f.pieceIds.includes(p.id)).map(f => f.weight);
+  if (!ws.length) return null;
+  if (Math.max(...ws) <= 1) return 'summer';
+  if (Math.min(...ws) >= 4 || (p.category === 'outerwear' && Math.min(...ws) >= 3)) return 'winter';
+  return null;
+}
+function openStorage() {
+  const staged = new Set(S.pieces.filter(p => p.stored).map(p => p.id));
+  const seasonIds = (k) => S.pieces.filter(p => pieceSeason(p) === k).map(p => p.id);
+  const h = openSheet({
+    cls: 'storage-sheet', title: t('Seasonal storage'),
+    body: () => {
+      const summer = seasonIds('summer'), winter = seasonIds('winter');
+      const fitsOut = S.fits.filter(f => f.pieceIds.some(id => staged.has(id))).length;
+      return `<p class="muted small" style="margin-top:0">${t('Tap pieces you\'ve put away. Fitty skips any fit that needs them until you bring them back.')}</p>
+        <div class="chips" style="margin-bottom:6px">
+          ${summer.length ? `<button class="chip" data-act="season" data-k="summer">☀️ ${t('Put away summer pieces')} · ${summer.length}</button>` : ''}
+          ${winter.length ? `<button class="chip" data-act="season" data-k="winter">❄️ ${t('Put away winter pieces')} · ${winter.length}</button>` : ''}
+          ${staged.size ? `<button class="chip" data-act="unstore-all">${icon('undo').replace('<svg', '<svg width="14" height="14"')} ${t('Bring everything back')}</button>` : ''}
+        </div>
+        <p class="small" style="margin:10px 0 14px"><b>${t('{n} pieces in storage', { n: staged.size })}</b>${staged.size ? ` <span class="muted">· ${t('{n} fits sit out', { n: fitsOut })}</span>` : ''}</p>
+        ${CATS.map(c => {
+          const ps = S.pieces.filter(p => p.category === c.id).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          return ps.length ? `<div class="section-title">${c.label}</div>
+            <div class="flatlay store-grid">${ps.map(p => itemTile(p, { act: 'toggle', selectable: true, selected: staged.has(p.id), sub: pieceSeason(p) === 'summer' ? '☀️ ' + t('Summer') : pieceSeason(p) === 'winter' ? '❄️ ' + t('Winter') : CAT[p.category].one })).join('')}</div>` : '';
+        }).join('')}`;
+    },
+    foot: () => `<button class="btn grow" data-close>${t('Cancel')}</button><button class="btn grow primary" data-act="save">${t('Save')}</button>`,
+    onAct: async (act, el) => {
+      if (act === 'toggle') { const id = el.dataset.id; staged.has(id) ? staged.delete(id) : staged.add(id); h.rerender(); }
+      else if (act === 'season') { seasonIds(el.dataset.k).forEach(id => staged.add(id)); h.rerender(); }
+      else if (act === 'unstore-all') { staged.clear(); h.rerender(); }
+      else if (act === 'save') {
+        let out = 0, back = 0;
+        for (const p of S.pieces) {
+          const want = staged.has(p.id);
+          if (want === !!p.stored) continue;
+          if (want) { p.stored = true; p.storedAt = Date.now(); out++; } else { delete p.stored; delete p.storedAt; back++; }
+          await db.put('pieces', p);
+        }
+        h.close(); render();
+        if (out || back) toast([out ? t('{n} pieces put away', { n: out }) : '', back ? t('{n} brought back', { n: back }) : ''].filter(Boolean).join(' · '));
+      }
+    },
+  });
+}
+
 // ================================================================= HISTORY
 function historyHead() {
   return `<div class="view-head"><div><h1>${t('History')}</h1><p class="muted">${S.histTab === 'stats' ? t('How your wardrobe is really used') : t('Tap a day to see or log what you wore')}</p></div>
@@ -1548,26 +1873,27 @@ function viewStats() {
     }
   }
   const d30 = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return toISO(d); })();
-  const used30 = S.pieces.filter(p => (pieceLast.get(p.id) || '') >= d30).length;
+  const AP = activePieces();
+  const used30 = AP.filter(p => (pieceLast.get(p.id) || '') >= d30).length;
   const L = learning();
   const rated = past.filter(w => typeof w.feel === 'number');
 
   const topFits = [...fitCount].sort((a, b) => b[1] - a[1]).slice(0, 6)
     .map(([id, n]) => ({ label: (fitById(id) || {}).name || (past.find(w => w.fitId === id) || {}).fitName || t('Deleted fit'), value: n }));
   const topPieces = [...pieceCount].filter(([id]) => pieceById(id)).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  const dusty = S.pieces.map(p => ({ p, last: pieceLast.get(p.id) || null }))
+  const dusty = AP.map(p => ({ p, last: pieceLast.get(p.id) || null }))
     .filter(x => !x.last || x.last < d30)
     .sort((a, b) => (a.last || '') < (b.last || '') ? -1 : 1).slice(0, 8);
 
   const catRows = CATS.map(c => {
-    const ps = S.pieces.filter(p => p.category === c.id);
+    const ps = AP.filter(p => p.category === c.id);
     const used = ps.filter(p => (pieceLast.get(p.id) || '') >= d30).length;
     return { c, n: ps.length, used };
   }).filter(r => r.n);
 
   // colors by family
   const fam = new Map();
-  for (const p of S.pieces) if (p.color) { const ci = colorInfo(p.color); const k = ci.family; const e = fam.get(k) || { name: t(ci.name), hex: PALETTE.find(x => x.id === k).hex, n: 0 }; e.n++; fam.set(k, e); }
+  for (const p of AP) if (p.color) { const ci = colorInfo(p.color); const k = ci.family; const e = fam.get(k) || { name: t(ci.name), hex: PALETTE.find(x => x.id === k).hex, n: 0 }; e.n++; fam.set(k, e); }
   const famRows = [...fam.values()].sort((a, b) => b.n - a.n);
   const colored = famRows.reduce((s, r) => s + r.n, 0);
 
@@ -1576,8 +1902,8 @@ function viewStats() {
   return `
     <div class="kpis">
       <div class="card stat"><b>${past.length}</b><span>${t('days logged', { n: past.length })}</span></div>
-      <div class="card stat"><b>${S.fits.length}<small> / ${S.pieces.length}</small></b><span>${t('fits / pieces')}</span></div>
-      <div class="card stat"><b>${S.pieces.length ? Math.round(100 * used30 / S.pieces.length) : 0}%</b><span>${t('of pieces worn in 30 days')}</span></div>
+      <div class="card stat"><b>${activeFits().length}<small> / ${AP.length}</small></b><span>${t('fits / pieces')}</span></div>
+      <div class="card stat"><b>${AP.length ? Math.round(100 * used30 / AP.length) : 0}%</b><span>${t('of pieces worn in 30 days')}</span></div>
       <div class="card stat"><b>${rated.length ? L.justRightPct ?? Math.round(100 * rated.filter(w => w.feel === 0).length / rated.length) : '—'}${rated.length ? '%' : ''}</b><span>${t('“just right” days')}</span></div>
     </div>
     <div class="stats-grid">
@@ -1757,15 +2083,26 @@ function viewSettings() {
           <input type="file" accept="application/json,.json" hidden data-file="import">
         </div>
         <label class="toggle small" style="margin-top:12px;justify-content:flex-start;gap:10px"><input type="checkbox" data-k="imp-settings"> ${t('Also import settings (location, weather mapping, cooldown)')}</label>
+        <div class="sync-qr">
+          <div><b>${icon('qr').replace('<svg', '<svg width="16" height="16" style="vertical-align:-3px"')} ${t('Device to device')}</b><p class="small muted" style="margin:4px 0 0">${t('Scan a QR code to copy everything straight to your other phone or laptop.')}</p></div>
+          <div class="row" style="flex-wrap:wrap"><button class="btn" data-act="x-send">${t('Send')}</button><button class="btn" data-act="x-recv">${t('Receive')}</button></div>
+        </div>
         <p class="small muted" data-storage style="margin:10px 0 0"></p>
       </div>
+
+      ${BETA ? `<div class="card pad">
+        <h3>🧪 ${t('Beta')}</h3>
+        <p>${t('This test version keeps its own copy of your data, separate from the main app.')}</p>
+        <div class="row" style="flex-wrap:wrap"><button class="btn" data-act="beta-copy">${t('Copy data from the main app again')}</button>
+        <a class="btn" href="../">${t('Open the main app')}</a></div>
+      </div>` : ''}
 
       <div class="card pad">
         <h3>${t('Danger zone')}</h3>
         <p>${t('Erase every fit, piece, group and history entry on this device.')}</p>
         <button class="btn danger" data-act="wipe">${icon('trash')} ${t('Erase all data')}</button>
       </div>
-      <p class="small muted" style="text-align:center">fitty · v${APP_VERSION}</p>
+      <p class="small muted" style="text-align:center">fitty · v${APP_VERSION}${BETA ? ' beta' : ''}</p>
     </div>`;
 }
 
@@ -1902,10 +2239,13 @@ function afterSettings(view) {
         break;
       }
       case 'import': $('input[data-file=import]', view).click(); break;
+      case 'x-send': openTransfer('send'); break;
+      case 'beta-copy': betaCopy(true); break;
+      case 'x-recv': openTransfer('receive'); break;
       case 'wipe': {
         if (!(await ask({ title: t('Erase everything?'), text: t('All fits, pieces, groups and history on this device will be deleted. Export a backup first if you might want them back.'), ok: t('Erase all'), danger: true }))) return;
         for (const s of ['pieces', 'fits', 'groups', 'wears']) await db.clear(s);
-        localStorage.removeItem('fitbud:daily');
+        localStorage.removeItem(LS_PREFIX + 'daily');
         await reloadData(); render(); toast(t('All data erased'));
         break;
       }
@@ -1918,7 +2258,20 @@ async function maybeShowWhatsNew() {
   const seen = await db.getMeta('seenVersion', null);
   await db.setMeta('seenVersion', APP_VERSION);
   if (seen === APP_VERSION || (!seen && !S.fits.length && !S.pieces.length)) return; // brand-new users skip it
-  if (seen && seen >= '2.0') return; // only users coming from v1 see the v2 tour
+  if (seen && seen >= '2.0') {
+    if (seen >= '3.0') return;
+    const items27 = [
+      ['📦', 'Seasonal storage', 'Wardrobe → Storage: put summer or winter pieces away. Fitty skips fits that need them, and tells you when the weather calls for them again.'],
+      ['📤', 'Share a fit', 'Tap the share button on a suggestion or in the fit editor to make an image card for your story or a friend.'],
+      ['📲', 'Device to device', 'Settings → Send / Receive: scan a QR code to copy everything to your other phone or laptop, no files needed.'],
+    ];
+    openSheet({
+      cls: 'narrow', title: t("What's new in v{v}", { v: APP_VERSION }),
+      body: () => `<div class="whatsnew">${items27.map(([e, ti, d]) => `<div><span class="wn-e">${e}</span><div><b>${t(ti)}</b><p>${t(d)}</p></div></div>`).join('')}</div>`,
+      foot: () => `<button class="btn grow primary" data-close>${t("Let's go")}</button>`,
+    });
+    return;
+  }
   const items = [
     ['🥶👌🥵', 'How did it feel?', 'After you wear a fit, tap how it felt. Fitty learns if you run warm or cold and fixes fit weights.'],
     ['✨', 'Combo ideas', 'Fits → Ideas mixes pieces you own into new outfits that match.'],
@@ -1952,6 +2305,17 @@ async function boot() {
   let repaired = null;
   try { repaired = await migratePhotos(); } catch (e) { console.warn('Photo repair failed', e); }
   await reloadData();
+  if (!BETA && 'indexedDB' in window) {
+    // The v2.7 beta kept its own copy of the data. Offer to bring its changes over (or quietly tidy it up).
+    S.betaLeft = await betaSummary().catch(() => null);
+    if (S.betaLeft && !S.betaLeft.total) { deleteBeta(); S.betaLeft = null; }
+  }
+  if (BETA) {
+    document.documentElement.classList.add('is-beta');
+    document.title = 'fitty beta';
+    $$('.brand').forEach(el => el.insertAdjacentHTML('beforeend', '<sup class="beta-tag">beta</sup>'));
+    if (!S.pieces.length && !S.fits.length) S.mainCounts = await mainAppCounts().catch(() => null);
+  }
   // Afternoon/evening → planning tomorrow; morning → today.
   S.mode = new Date().getHours() >= 14 ? 'tomorrow' : 'today';
   const v = location.hash.slice(1);

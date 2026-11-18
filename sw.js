@@ -1,10 +1,13 @@
 // Fitty service worker — makes the app work offline.
 // Bump VERSION whenever you change app files so phones pick up the update.
-const VERSION = 'fitty-v2.6.1';
+// Only clear our own old caches (a test copy of the app may share this site).
+const CACHE_PREFIX = 'fitty-v';
+const VERSION = CACHE_PREFIX + '3.0.0';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/weather.js', './js/recommend.js', './js/images.js', './js/bg-worker.js',
   './js/colors.js', './js/cutout-clean.js', './js/i18n.js', './js/lang-ar.js', './js/learn.js', './js/planner.js', './js/ideas.js',
+  './js/config.js', './js/share.js', './js/transfer.js', './js/vendor/qrcode.min.js', './js/vendor/jsqr.min.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png',
 ];
 const RUNTIME = 'fitbud-runtime'; // old name kept so the downloaded AI model stays cached
@@ -18,7 +21,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION && k !== RUNTIME).map(k => caches.delete(k))))
+    caches.keys().then(keys => Promise.all(keys.filter(k => (k.startsWith(CACHE_PREFIX) && k !== VERSION) || k.startsWith('fitty-beta-')).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

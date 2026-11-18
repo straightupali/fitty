@@ -1,5 +1,5 @@
 // Fitty — IndexedDB storage layer. Everything lives on this device.
-const DB_NAME = 'fitbud'; // internal name kept from before the rename, so existing data stays
+import { DB_NAME, MAIN_DB_NAME, BETA_DB_NAME } from './config.js';
 const DB_VERSION = 1;
 export const STORES = ['pieces', 'fits', 'groups', 'wears', 'meta'];
 
@@ -185,4 +185,101 @@ export async function importAll(data, { replace = false, includeSettings = false
   }
   if (includeSettings) for (const m of data.meta || []) await db.putRaw('meta', m);
   return stats;
+}
+
+// ---------- Beta: copy data from the main app ----------
+// Opens the main app's database read-only. If it doesn't exist we abort the upgrade,
+// so the browser never creates an empty one (that would break the main app).
+function openMain(name = MAIN_DB_NAME) {
+  return new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.open(name); } catch { resolve(null); return; }
+    req.onupgradeneeded = () => { try { req.transaction.abort(); } catch { } };
+    req.onsuccess = () => {
+      const d = req.result;
+      if (!STORES.every(s => d.objectStoreNames.contains(s))) { d.close(); resolve(null); return; }
+      resolve(d);
+    };
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+  });
+}
+
+export async function mainAppCounts() {
+  const m = await openMain();
+  if (!m) return null;
+  try {
+    const t = m.transaction(['pieces', 'fits'], 'readonly');
+    const [pieces, fits] = await Promise.all(['pieces', 'fits'].map(s => reqP(t.objectStore(s).count())));
+    return { pieces, fits };
+  } finally { m.close(); }
+}
+
+// Replaces everything in this (beta) database with a copy of the main app's data.
+export async function copyFromMain() {
+  const m = await openMain();
+  if (!m) throw new Error('main app data not found');
+  const data = {};
+  try {
+    const t = m.transaction(STORES, 'readonly');
+    for (const s of STORES) data[s] = await reqP(t.objectStore(s).getAll());
+  } finally { m.close(); }
+  for (const s of STORES) {
+    await db.clear(s);
+    for (const row of data[s]) await tx(s, 'readwrite', st => reqP(st.put(row)));  // raw copy, photos included
+  }
+  return { pieces: data.pieces.length, fits: data.fits.length };
+}
+
+// ---------- Main app: bring over changes made while testing the beta ----------
+// Looks at the beta's database and counts records that are new or newer than ours.
+async function readBeta() {
+  const b = await openMain(BETA_DB_NAME);
+  if (!b) return null;
+  const data = {};
+  try {
+    const t = b.transaction(STORES, 'readonly');
+    for (const s of STORES) data[s] = await reqP(t.objectStore(s).getAll());
+  } finally { b.close(); }
+  return data;
+}
+async function betaChanges(data) {
+  const out = [];
+  for (const store of ['groups', 'pieces', 'fits', 'wears']) {
+    const mine = new Map((await tx(store, 'readonly', s => reqP(s.getAll()))).map(r => [r.id, r]));
+    for (const rec of data[store] || []) {
+      const cur = mine.get(rec.id);
+      if (!cur || (rec.updatedAt || 0) > (cur.updatedAt || 0)) out.push([store, rec, !cur]);
+      // Storage only existed in the beta, so a piece you put away there stays put away,
+      // even if this copy was touched later (e.g. a cut-out finished).
+      else if (store === 'pieces' && rec.stored && !cur.stored && cur.storedAt == null)
+        out.push([store, { ...cur, stored: true, storedAt: rec.storedAt || Date.now(), updatedAt: Date.now() }, false]);
+    }
+  }
+  return out;
+}
+export async function betaSummary() {
+  const data = await readBeta();
+  if (!data) return null;
+  const ch = await betaChanges(data);
+  const n = (store, isNew) => ch.filter(([s, , nw]) => s === store && (isNew == null || nw === isNew)).length;
+  return { total: ch.length, newWears: n('wears', true), newFits: n('fits', true), newPieces: n('pieces', true),
+    changedPieces: n('pieces', false), changedFits: n('fits', false), other: n('groups') + n('wears', false) };
+}
+export async function mergeFromBeta() {
+  const data = await readBeta();
+  if (!data) return { total: 0 };
+  const ch = await betaChanges(data);
+  for (const [store, rec] of ch) await tx(store, 'readwrite', s => reqP(s.put(rec)));  // raw rows, photos included
+  return { total: ch.length };
+}
+export async function deleteBeta() {
+  await new Promise((res) => { const r = indexedDB.deleteDatabase(BETA_DB_NAME); r.onsuccess = r.onerror = r.onblocked = () => res(); });
+  // also drop the beta's offline copy and its service worker
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(k => k.startsWith('fitty-beta-')).map(k => caches.delete(k)));
+    const regs = await navigator.serviceWorker?.getRegistrations?.() || [];
+    await Promise.all(regs.filter(r => /\/beta\/$/.test(r.scope)).map(r => r.unregister()));
+  } catch { }
 }

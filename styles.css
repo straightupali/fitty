@@ -203,7 +203,7 @@ button.item { border: 0; padding: 0; text-align: start; }
 /* ---------- Fits list ---------- */
 .fit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
 @media (min-width: 900px) { .fit-grid { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 18px; } }
-.fitcard { border: 0; padding: 0; text-align: left; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; transition: transform .15s; }
+.fitcard { position: relative; border: 0; padding: 0; text-align: start; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; transition: transform .15s; }
 .fitcard:hover { transform: translateY(-2px); }
 .fitcard .body { padding: 10px 13px 13px; }
 .fitcard .name { font-family: var(--serif); font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -518,3 +518,55 @@ button.item { border: 0; padding: 0; text-align: start; }
 [dir="rtl"] .range { background: linear-gradient(270deg, var(--light), var(--range-mid) 50%, var(--heavy)); }
 /* numbers and temperatures keep reading left-to-right inside Arabic text */
 [dir="rtl"] .weight-val, [dir="rtl"] .temp, [dir="rtl"] .bar-val, [dir="rtl"] .stat b { unicode-bidi: plaintext; }
+
+/* ---------- v2.7: beta label ---------- */
+.beta-tag { font-family: var(--sans); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); padding: 2px 6px; border-radius: 999px; margin-inline-start: 6px; vertical-align: super; }
+.beta-card, .store-hint { display: flex; align-items: center; gap: 14px; padding: 14px 16px; margin-bottom: 18px; border: 1px solid var(--line); flex-wrap: wrap; }
+.beta-card > div, .store-hint > div { flex: 1 1 200px; min-width: 0; }
+.sh-e { font-size: 26px; }
+.store-hint { margin-top: 14px; margin-bottom: 0; }
+
+/* ---------- v2.7: seasonal storage ---------- */
+.item .stored-tag { background: var(--float); }
+.fitcard.stored .collage { opacity: .45; filter: grayscale(.5); }
+.fitcard.stored .name { color: var(--muted); }
+.stored-badge { position: absolute; top: 10px; inset-inline-start: 10px; font-size: 11px; background: var(--float); padding: 3px 9px; border-radius: 999px; }
+.storage-row { padding: 12px 14px; border-radius: var(--radius-s); background: var(--tile); }
+.storage-row b { font-weight: 600; font-size: 14px; }
+.store-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+
+/* ---------- v2.7: share ---------- */
+.share-seg { margin: 0 auto 14px; width: max-content; }
+.share-preview { display: flex; align-items: center; justify-content: center; background: var(--tile); border-radius: var(--radius-s); min-height: 300px; padding: 10px; }
+.share-preview img { display: block; max-width: 100%; max-height: 56vh; border-radius: 10px; box-shadow: var(--shadow); }
+
+/* ---------- v2.7: device to device ---------- */
+.sync-qr { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.sync-qr > div:first-child { flex: 1 1 220px; }
+.xfer-hint { text-align: center; margin-top: 0; }
+.xfer-list { padding-inline-start: 18px; line-height: 1.6; }
+.xfer-steps { display: flex; gap: 6px; justify-content: center; margin-bottom: 14px; }
+.xfer-steps span { width: 28px; height: 4px; border-radius: 4px; background: var(--tile-2); }
+.xfer-steps span.on { background: var(--accent); }
+.qr-box { background: #fff; padding: 14px; border-radius: 16px; width: min(300px, 78vw); margin: 0 auto; box-shadow: var(--shadow); }
+.qr-box svg { display: block; width: 100%; height: auto; }
+.xfer .sheet-body { text-align: start; }
+.xfer .linkbtn { display: block; margin-inline: auto; }
+.cam { position: relative; width: min(320px, 82vw); aspect-ratio: 1; margin: 0 auto; border-radius: 18px; overflow: hidden; background: #000; }
+.cam video { width: 100%; height: 100%; object-fit: cover; }
+.cam-frame { position: absolute; inset: 14%; border: 3px solid rgba(255,255,255,.85); border-radius: 16px; box-shadow: 0 0 0 999px rgba(0,0,0,.25); }
+.xfer-msg { text-align: center; padding: 18px 6px; }
+.xfer-msg .art { font-size: 42px; }
+.prog { height: 8px; border-radius: 8px; background: var(--tile-2); overflow: hidden; margin: 12px 0; }
+.prog > div { height: 100%; background: var(--accent); transition: width .2s; }
+.spin { width: 34px; height: 34px; border: 3px solid var(--tile-2); border-top-color: var(--accent); border-radius: 50%; margin: 10px auto; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.storage-sheet .chips { flex-wrap: wrap; overflow: visible; }
+/* Phones: the weather table was wider than the screen and stretched the whole Settings page */
+.map-table td { overflow-wrap: anywhere; }
+@media (max-width: 440px) {
+  .map-table td:last-child { display: none; }
+  .map-table input { width: 64px; padding: 7px 8px; }
+}
+.settings .card.toggle { flex-wrap: wrap; }
+.settings .card.toggle > div:first-child { flex: 1 1 160px; min-width: 0; }

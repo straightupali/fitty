@@ -1,5 +1,12 @@
 # Fitty changelog
 
+## v3.0
+- **Seasonal storage:** Wardrobe → Storage. Put pieces away (one tap for all summer or all winter pieces, or toggle one in its editor). Fits that need a stored piece sit out of suggestions, the week plan and combo ideas. When the weather turns, Today tells you which stored fits suit it.
+- **Share a fit:** a share button on suggestions and in the fit editor makes an image card (Post 4:5 or Story 9:16) with the pieces, weight and colors. It follows your language and theme.
+- **Device to device:** Settings → Send / Receive. Scan a QR code on each device and everything (photos included) copies directly over your Wi-Fi. No files, no server. If there's no camera, you can paste the code as text instead.
+- **Fixed:** on narrow phones the Settings page was slightly wider than the screen, so windows opened from it had buttons cut off.
+- **Beta merged:** if you tried the v2.7 beta, Today offers to bring over what you did there (logged days, new fits, stored pieces…). Newer versions win and nothing is deleted. The beta address now just opens the main app.
+
 ## v2.6
 - **Arabic (العربية):** switch in Settings → Language. The whole app is translated: screens, windows, toasts, weather, color names, What's new.
 - **Right-to-left layout:** in Arabic, menus, cards, sliders, the calendar and movable windows all flip to read right to left.
